@@ -128,6 +128,11 @@ class Transcript {
     this.toolRows.clear();
   }
 
+  /** True when no transcript rows have been rendered yet (used to decide if a history replay is still needed). */
+  isEmpty(): boolean {
+    return this.root.childElementCount === 0;
+  }
+
   handle(ev: RpcEvent): void {
     switch (ev.type) {
       case "agent_start":
@@ -409,6 +414,7 @@ function setup(): void {
   let active = "";
   let forkMessages: ForkMessage[] = [];
   let pendingFork = false;
+  let historyAttempts = 0;
 
   // --- HITL dialogs (ticket #07) ---------------------------------------------
   // Pending dialog requests are kept PER SESSION (name -> request), so a modal on one
@@ -799,9 +805,16 @@ function setup(): void {
         break;
       }
       case "history": {
-        // Replay the session's past messages on (re)attach (rpc.md get_messages).
+        // Replay the session's past messages on (re)attach (rpc.md get_messages). If it
+        // came back empty (freshly-resumed child not ready, or a lost request during a
+        // reload), retry so history isn't silently missing.
         const msgs = (r.data as { messages?: Array<{ role?: string; content?: unknown }> } | undefined)?.messages ?? [];
         for (const m of msgs) transcript.renderHistorical(m.role ?? "message", m.content);
+        if (msgs.length === 0) {
+          if (historyAttempts < 5) { historyAttempts++; setTimeout(() => requestHistoryIfNeeded(), 900); }
+        } else {
+          historyAttempts = 0;
+        }
         break;
       }
       case "export_html": {
@@ -828,6 +841,17 @@ function setup(): void {
     wsSend({ type: "state" });
     wsSend({ type: "stats" });
     wsSend({ type: "structure" });
+  }
+
+  /**
+   * Re-request the session's history if the transcript is still empty. History is requested
+   * once on connect but can otherwise be lost if the WS was interrupted (page reload) or the
+   * freshly-resumed child wasn't ready (server replies "not running" instead of a result);
+   * re-requesting whenever the session reports running and the transcript is empty recovers it.
+   */
+  function requestHistoryIfNeeded(): void {
+    if (!transcript.isEmpty()) return; // already has content (history or live) — don't clobber
+    if (ws?.readyState === WebSocket.OPEN) wsSend({ type: "history" });
   }
 
   function handleFrame(obj: RpcEvent): void {
@@ -876,6 +900,7 @@ function setup(): void {
       aborting = false;
       stopped = false;
       renderAgentState();
+      requestHistoryIfNeeded(); // session is now running — recover history if the transcript is still empty
     } else if (obj.type === "agent_settled") {
       agentRunning = false;
       aborting = false;
@@ -939,7 +964,10 @@ function setup(): void {
       refreshPanel();
       // Replay the session's past history into the (just-cleared) transcript, so a page
       // refresh / tab switch shows prior work instead of an empty, live-only feed.
-      wsSend({ type: "history" });
+      historyAttempts = 0;
+      requestHistoryIfNeeded();
+      // Retry history after a beat in case the freshly-resumed child wasn't ready yet.
+      setTimeout(() => requestHistoryIfNeeded(), 1200);
       // Restore this session's optimistic auto-retry choice (per-session; unknown -> off).
       autoRetryChk.checked = sessionAutoRetry.get(active) ?? false;
       // Flush a HITL answer buffered while the socket was down, so a mid-reconnect answer
