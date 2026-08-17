@@ -223,6 +223,16 @@ public sealed record GetTreeCommand : RpcCommand
     public override string Type => "get_tree";
 }
 
+/// <summary>
+/// Get all messages in the conversation (rpc.md <c>get_messages</c>). Each entry is an
+/// <c>AgentMessage</c> with a <c>role</c> and typed <c>content</c> blocks. Used to replay
+/// a session's history to a freshly-attached browser tab.
+/// </summary>
+public sealed record GetMessagesCommand : RpcCommand
+{
+    public override string Type => "get_messages";
+}
+
 // ---------------------------------------------------------------------------
 // Response + events
 // ---------------------------------------------------------------------------

@@ -166,6 +166,10 @@ public sealed class Session : IAsyncDisposable
     public Task<RpcResponse?> GetTreeAsync(CancellationToken ct = default)
         => SendCommand(() => new GetTreeCommand(), "get_tree", ct);
 
+    /// <summary>Get all messages in this session for history replay (rpc.md <c>get_messages</c>).</summary>
+    public Task<RpcResponse?> GetMessagesAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetMessagesCommand(), "get_messages", ct);
+
     /// <summary>
     /// Send a HITL dialog answer back to this session's child as an
     /// <c>extension_ui_response</c> (ticket #07, rpc.md). Fire-and-forget: pi sends no

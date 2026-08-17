@@ -94,6 +94,20 @@ function contentText(content: unknown): string {
   return "";
 }
 
+/** JSON.stringify that never throws (returns a readable string fallback). */
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v ?? "");
+  }
+}
+
+/** A readable role label for transcript rows. */
+function roleLabel(role: string): string {
+  return role === "user" ? "You" : role === "assistant" ? "Assistant" : String(role);
+}
+
 /** Live, updating transcript renderer driven by RPC events. */
 class Transcript {
   private readonly root: HTMLElement;
@@ -226,6 +240,44 @@ class Transcript {
         // unknown/future block: fall back to text if it has any, never "[object Object]"
         const t = contentText(b) || (b.thinking ? String(b.thinking) : "");
         if (t && role !== "assistant") this.appendRow(role === "user" ? "You" : role, t);
+      }
+    }
+  }
+
+  /**
+   * Replay a session's past history on (re)attach from pi's get_messages result. Renders
+   * complete messages (no live streaming); tool_use/tool_result blocks are grouped into the
+   * same tool row via toolCallId so the transcript reads the same as before a refresh.
+   */
+  renderHistorical(role: string, content: unknown): void {
+    const blocks = Array.isArray(content) ? content : content == null ? [] : [content];
+    for (const blk of blocks) {
+      if (typeof blk === "string") {
+        this.appendRow(roleLabel(role), blk);
+        continue;
+      }
+      const b = blk as Record<string, any>;
+      if (!b || typeof b !== "object") {
+        const t = String(blk ?? "");
+        if (t) this.appendRow(roleLabel(role), t);
+        continue;
+      }
+      if (b.type === "text") {
+        this.appendRow(roleLabel(role), String(b.text ?? ""));
+      } else if (b.type === "tool_use") {
+        const row = this.appendToolRow(`>>> ${b.name ?? "tool"}`);
+        if (b.id) this.toolRows.set(String(b.id), row);
+        this.appendCode(row, safeJson(b.input));
+      } else if (b.type === "tool_result") {
+        const text = contentText(b.content);
+        const row = (b.tool_use_id && this.toolRows.get(String(b.tool_use_id))) ?? this.lastToolRow();
+        if (row) this.appendCode(row, text);
+        else if (text) this.appendRow("tool result", text);
+      } else if (b.type === "image") {
+        this.appendRow("image", "[image]");
+      } else {
+        const t = contentText(b) || (b.thinking ? String(b.thinking) : "");
+        if (t && role !== "assistant") this.appendRow(roleLabel(role), t);
       }
     }
   }
@@ -744,6 +796,12 @@ function setup(): void {
         renderTree(r.data);
         break;
       }
+      case "history": {
+        // Replay the session's past messages on (re)attach (rpc.md get_messages).
+        const msgs = (r.data as { messages?: Array<{ role?: string; content?: unknown }> } | undefined)?.messages ?? [];
+        for (const m of msgs) transcript.renderHistorical(m.role ?? "message", m.content);
+        break;
+      }
       case "export_html": {
         const d = r.data as { path?: string } | undefined;
         if (d?.path) {
@@ -877,6 +935,9 @@ function setup(): void {
       // path — it restores the actual current model + thinking level AND renders the panel.
       // No separate `get_state` send here (deduped).
       refreshPanel();
+      // Replay the session's past history into the (just-cleared) transcript, so a page
+      // refresh / tab switch shows prior work instead of an empty, live-only feed.
+      wsSend({ type: "history" });
       // Restore this session's optimistic auto-retry choice (per-session; unknown -> off).
       autoRetryChk.checked = sessionAutoRetry.get(active) ?? false;
       // Flush a HITL answer buffered while the socket was down, so a mid-reconnect answer

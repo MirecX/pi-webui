@@ -205,6 +205,10 @@ public sealed class WsBridge
                 // so the hierarchy is genuinely visible rather than a flat entry list.
                 await DispatchModelCommandAsync("structure", s => s.GetTreeAsync()).ConfigureAwait(false);
                 break;
+            case "history":
+                // All messages for history replay on browser (re)attach (rpc.md get_messages).
+                await DispatchModelCommandAsync("history", s => s.GetMessagesAsync()).ConfigureAwait(false);
+                break;
             case "state":
                 // Fetch the attached session's ACTUAL current selection (model + thinkingLevel +
                 // autoCompactionEnabled + stats), feeding BOTH the model/thinking pickers and the
