@@ -14,6 +14,20 @@ See **[DESIGN.md](DESIGN.md)** for the full architecture and decision record.
 
 ## Quick start (installed on demand)
 
+**One-liner (in a yolobox container or any box with pi + .NET SDK + Node):**
+
+```bash
+curl -fsSL https://pi.dev/install.sh | sh
+```
+
+[install.sh](install.sh) clones the repo, builds frontend + backend, writes
+`~/.pi/agent/extensions/pi-webui/config.json` (auto-generating a token), starts the server
+detached, and prints the token + `http://…/?token=…` URL. Idempotent (re-running updates,
+rebuilds, restarts). Env overrides: `PI_WEBUI_REPO`, `PI_WEBUI_REF`, `PI_WEBUI_DIR`,
+`PI_WEBUI_PORT` (default 8456), `PI_WEBUI_EXTERNAL=1` (bind `0.0.0.0` for a forwarded port).
+
+Manual (same as the script):
+
 ```bash
 # in the container (yolo user)
 git clone https://github.com/MirecX/pi-webui ~/.pi/agent/extensions/pi-webui
@@ -24,11 +38,11 @@ make run        # runs the server (token written to config.json, printed once)
 
 The server loads `~/.pi/agent/extensions/pi-webui/config.json` (fallback to repo
 `./config.json`), auto-generating + printing a token on first run (auth is
-enforced in ticket #02). Open `http://<box-ip>:<PORT>` and watch the live session;
-the send box prompts the agent and the reply streams back. (External reachability
+enforced in ticket #02). Open `http://<box-ip>:<PORT>/?token=<token>` — first load
+needs the token (it sets a same-origin cookie afterwards). External reachability
 = SSH host port + 10000, opt-in — DESIGN.md §6; see `docker-compose.example.yml` for
 the container port mapping, which only takes effect when `external: true` is set in
-the service config.)
+the service config).
 
 ## Development
 
