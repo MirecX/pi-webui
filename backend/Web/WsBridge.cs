@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using PiWebui.Rpc;
@@ -148,6 +149,30 @@ public sealed class WsBridge
                 await DispatchTurnAsync("abort", s => s.AbortAsync()).ConfigureAwait(false);
                 break;
 
+            // --- model + thinking switch (ticket #04) -------------------------
+            // All scoped to the ATTACHED session; results relayed back to the browser
+            // as a `result` frame carrying the RPC response `data` (model/level lists
+            // and confirmation of the applied selection).
+            case "models":
+                await DispatchModelCommandAsync("models", s => s.GetAvailableModelsAsync()).ConfigureAwait(false);
+                break;
+            case "set_model":
+                if (root.TryGetProperty("provider", out var provProp) && provProp.GetString() is { } provider
+                    && root.TryGetProperty("modelId", out var midProp) && midProp.GetString() is { } modelId)
+                {
+                    await DispatchModelCommandAsync("set_model", s => s.SetModelAsync(provider, modelId)).ConfigureAwait(false);
+                }
+                break;
+            case "thinking_levels":
+                await DispatchModelCommandAsync("thinking_levels", s => s.GetAvailableThinkingLevelsAsync()).ConfigureAwait(false);
+                break;
+            case "set_thinking_level":
+                if (root.TryGetProperty("level", out var lvlProp) && lvlProp.GetString() is { } level)
+                {
+                    await DispatchModelCommandAsync("set_thinking_level", s => s.SetThinkingLevelAsync(level)).ConfigureAwait(false);
+                }
+                break;
+
             case "init":
             case "recycle":
             case "delete":
@@ -285,6 +310,71 @@ public sealed class WsBridge
             // we're attached to closed the connection first). Never throw out of the
             // inbound handler.
         }
+    }
+
+    /// <summary>
+    /// Run one model/thinking command (models/set_model/thinking_levels/set_thinking_level)
+    /// against the attached session's child. Shares the turn-control error convention:
+    /// genuine failures surface to the browser; expected teardown stays quiet. On success
+    /// the RPC response <c>data</c> is relayed back to the browser as a <c>result</c> frame
+    /// so it can populate the available lists and reflect the applied selection.
+    /// </summary>
+    private async Task DispatchModelCommandAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
+    {
+        var s = _sessions.Get(_sessionName);
+        if (s is null || !s.IsRunning)
+        {
+            await SendErrorAsync($"session '{_sessionName}' is not running; initialize it first").ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var resp = await send(s).ConfigureAwait(false);
+            if (resp is { Success: false })
+            {
+                await SendErrorAsync($"{action} rejected: {resp.Error ?? "unknown error"}").ConfigureAwait(false);
+                return;
+            }
+            await SendResultAsync(action, resp?.DataJson).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await SendErrorAsync(ex.Message).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (s.IsRunning)
+                await SendErrorAsync($"{action} cancelled; the session stopped before it could respond").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            await SendErrorAsync($"{action} failed: {ex.Message}").ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Push a <c>result</c> frame to the browser: <c>{ "type": "result", "target": action, "data": &lt;raw rpc data&gt; }</c>.
+    /// The raw RPC response <c>data</c> JSON object is embedded verbatim so the browser receives
+    /// the exact model/level lists and applied-selection confirmation pi returned.
+    /// </summary>
+    private async Task SendResultAsync(string action, string? dataJson)
+    {
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "result");
+            w.WriteString("target", action);
+            if (dataJson is not null)
+            {
+                w.WritePropertyName("data");
+                w.WriteRawValue(dataJson, skipInputValidation: true);
+            }
+            w.WriteEndObject();
+        }
+        var json = Encoding.UTF8.GetString(ms.ToArray());
+        await _client.SendAsync(json, default).ConfigureAwait(false);
     }
 
     private async Task SendErrorAsync(string message) =>

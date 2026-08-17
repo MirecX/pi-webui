@@ -19,6 +19,23 @@ interface SessionInfo {
   status: "running" | "recycled" | "deleted";
 }
 
+/** A model as reported by get_available_models / set_model (subset of the pi Model). */
+interface ModelInfo {
+  id: string;
+  name?: string;
+  provider?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Server-side <c>result</c> frame (ticket #04): carries the RPC response data for a
+ * model/thinking request, keyed by <c>target</c> (models / thinking_levels / set_model / set_thinking_level).
+ */
+interface ResultFrame extends RpcEvent {
+  target?: string;
+  data?: unknown;
+}
+
 /** A single assistant message being streamed (text + optional thinking). */
 interface ActiveAssistant {
   text: HTMLElement;
@@ -237,6 +254,14 @@ function setup(): void {
   const sessions = new Map<string, string>(); // name -> status
   let active = "";
 
+  // --- model + thinking pickers (ticket #04) --------------------------------
+  const modelSelect = document.querySelector<HTMLSelectElement>("#model-select")!;
+  const thinkingSelect = document.querySelector<HTMLSelectElement>("#thinking-select")!;
+  let availableModels: ModelInfo[] = [];
+  let availableThinkingLevels: string[] = [];
+  let currentModel: ModelInfo | null = null;
+  let currentThinkingLevel: string | null = null;
+
   // --- agent state (running/queued/idle), driven by relayed RPC events ---------
   const agentStateEl = document.querySelector<HTMLElement>("#agent-state")!;
   let agentRunning = false;
@@ -346,7 +371,68 @@ function setup(): void {
     status.set("no sessions — create one to begin");
     sessionListEl.textContent = "";
     renderSessions(); // resets the active label + disables lifecycle controls
+    renderPickers();   // disables the pickers (no active session)
     sessionListEl.append(el("li", "No sessions yet. Click “+ New” to create one.", "empty-hint"));
+  }
+
+  /** Stable key for a model option (provider + id joined with a NUL; safe if either contains "/"). */
+  function modelKey(m: ModelInfo): string {
+    return `${m.provider ?? ""}\u0000${m.id}`;
+  }
+
+  /** Rebuild the model + thinking dropdowns and reflect the current selection. */
+  function renderPickers(): void {
+    modelSelect.textContent = "";
+    for (const m of availableModels) {
+      const opt = el("option", m.name ? `${m.name} (${m.provider}/${m.id})` : `${m.provider}/${m.id}`) as HTMLOptionElement;
+      opt.value = modelKey(m);
+      modelSelect.append(opt);
+    }
+    if (currentModel) modelSelect.value = modelKey(currentModel);
+    else modelSelect.selectedIndex = -1;
+
+    thinkingSelect.textContent = "";
+    for (const lvl of availableThinkingLevels) {
+      const opt = el("option", lvl) as HTMLOptionElement;
+      opt.value = lvl;
+      thinkingSelect.append(opt);
+    }
+    if (currentThinkingLevel) thinkingSelect.value = currentThinkingLevel;
+    else thinkingSelect.selectedIndex = -1;
+
+    const disabled = !active;
+    modelSelect.disabled = disabled;
+    thinkingSelect.disabled = disabled;
+  }
+
+  /** Apply a model/thinking <c>result</c> frame, populating lists and reflecting selection. */
+  function handleResult(r: ResultFrame): void {
+    switch (r.target) {
+      case "models": {
+        availableModels = (r.data as { models?: ModelInfo[] } | undefined)?.models ?? [];
+        renderPickers();
+        break;
+      }
+      case "thinking_levels": {
+        availableThinkingLevels = (r.data as { levels?: string[] } | undefined)?.levels ?? [];
+        renderPickers();
+        break;
+      }
+      case "set_model": {
+        if (r.data) {
+          currentModel = r.data as ModelInfo;
+          if (!availableModels.some((m) => modelKey(m) === modelKey(currentModel!))) {
+            availableModels = [...availableModels, currentModel];
+          }
+          renderPickers();
+        }
+        break;
+      }
+      case "set_thinking_level":
+        // plain set returns no data; the level we selected is already current.
+        renderPickers();
+        break;
+    }
   }
 
   function handleFrame(obj: RpcEvent): void {
@@ -362,6 +448,10 @@ function setup(): void {
     if (obj.type === "error") {
       status.set(`⚠ ${String((obj as { message?: string }).message ?? "error")}`);
       return;
+    }
+    if (obj.type === "result") {
+      handleResult(obj as ResultFrame);
+      return; // model/thinking pickers only, not a transcript event
     }
     if (obj.type === "agent_start") {
       agentRunning = true;
@@ -400,7 +490,18 @@ function setup(): void {
     const url = wsUrl();
     const socket = new WebSocket(url);
     ws = socket;
-    socket.onopen = () => status.set("● connected");
+    socket.onopen = () => {
+      status.set("● connected");
+      // Per-session pickers: refetch the available lists for THIS session on every
+      // (re)connect / tab switch, so one session's selection never bleeds into another.
+      availableModels = [];
+      availableThinkingLevels = [];
+      currentModel = null;
+      currentThinkingLevel = null;
+      renderPickers();
+      wsSend({ type: "models" });
+      wsSend({ type: "thinking_levels" });
+    };
     socket.onmessage = (evt) => {
       let obj: RpcEvent;
       try {
@@ -445,6 +546,25 @@ function setup(): void {
       e.preventDefault();
       submit();
     }
+  });
+
+  // --- model / thinking pickers (ticket #04) --------------------------------
+  modelSelect.addEventListener("change", () => {
+    if (!active) return;
+    const m = availableModels.find((x) => modelKey(x) === modelSelect.value);
+    if (!m) return;
+    currentModel = m;
+    renderPickers();
+    wsSend({ type: "set_model", provider: m.provider, modelId: m.id });
+  });
+
+  thinkingSelect.addEventListener("change", () => {
+    if (!active) return;
+    const level = thinkingSelect.value;
+    if (!level) return;
+    currentThinkingLevel = level;
+    renderPickers();
+    wsSend({ type: "set_thinking_level", level });
   });
 
   // --- abort / steer / follow-up (ticket #03) ------------------------------

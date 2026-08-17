@@ -628,4 +628,252 @@ public class WsBridgeTests
         Assert.True(h.Manager.Get("a")!.IsRunning); // attached session untouched
         Assert.False(ws.Closed);
     }
+
+    // --- model + thinking switch (ticket #04) --------------------------------
+
+    /// <summary>
+    /// A scripted fake child that answers the model/thinking commands like real pi:
+    /// get_available_models returns a list with <paramref name="modelId"/>,
+    /// set_model returns that model object, get_available_thinking_levels returns
+    /// levels including <paramref name="level"/>, set_thinking_level acks.
+    /// </summary>
+    private static FakePiRpcClient ModelClient(string modelId = "claude-3-5-sonnet", string level = "medium")
+    {
+        return new FakePiRpcClient(cmd => cmd switch
+        {
+            GetAvailableModelsCommand => new RpcResponse("m1", "get_available_models", true, null,
+                JsonDocument.Parse(
+                    $"{{\"models\":[{{\"id\":\"{modelId}\",\"provider\":\"anthropic\",\"name\":\"Claude {modelId}\"}}]}}").RootElement),
+            SetModelCommand => new RpcResponse("m2", "set_model", true, null,
+                JsonDocument.Parse($"{{\"id\":\"{modelId}\",\"provider\":\"anthropic\",\"name\":\"Claude {modelId}\"}}").RootElement),
+            GetAvailableThinkingLevelsCommand => new RpcResponse("t1", "get_available_thinking_levels", true, null,
+                JsonDocument.Parse($"{{\"levels\":[\"off\",\"{level}\",\"high\"]}}").RootElement),
+            SetThinkingLevelCommand => new RpcResponse("t2", "set_thinking_level", true, null, null),
+            _ => null,
+        });
+    }
+
+    [Fact]
+    public async Task Models_frame_requests_available_models_and_relays_list_to_browser()
+    {
+        var client = ModelClient("claude-3-5-sonnet");
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-models-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"models\"}");
+
+            var cmd = Assert.Single(client.Sent.OfType<GetAvailableModelsCommand>());
+            Assert.NotNull(cmd);
+            // the scripted list round-trips to the browser as a `result` frame
+            var frame = Assert.Single(ws.Sent);
+            Assert.Contains("\"type\":\"result\"", frame);
+            Assert.Contains("\"target\":\"models\"", frame);
+            Assert.Contains("\"models\"", frame);
+            Assert.Contains("claude-3-5-sonnet", frame);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Set_model_frame_forwards_command_with_provider_and_modelid_and_relays_confirmation()
+    {
+        var client = ModelClient("claude-3-5-sonnet");
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-setmodel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync(
+                "{\"type\":\"set_model\",\"provider\":\"anthropic\",\"modelId\":\"claude-3-5-sonnet\"}");
+
+            var cmd = Assert.Single(client.Sent.OfType<SetModelCommand>());
+            Assert.Equal("anthropic", cmd.Provider);
+            Assert.Equal("claude-3-5-sonnet", cmd.ModelId);
+
+            var frame = Assert.Single(ws.Sent);
+            Assert.Contains("\"type\":\"result\"", frame);
+            Assert.Contains("\"target\":\"set_model\"", frame);
+            Assert.Contains("claude-3-5-sonnet", frame); // the applied model confirmed back
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Thinking_levels_frame_requests_and_relays_levels_to_browser()
+    {
+        var client = ModelClient(level: "medium");
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-levels-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"thinking_levels\"}");
+
+            var cmd = Assert.Single(client.Sent.OfType<GetAvailableThinkingLevelsCommand>());
+            Assert.NotNull(cmd);
+            var frame = Assert.Single(ws.Sent);
+            Assert.Contains("\"type\":\"result\"", frame);
+            Assert.Contains("\"target\":\"thinking_levels\"", frame);
+            Assert.Contains("\"levels\"", frame);
+            Assert.Contains("\"off\"", frame);
+            Assert.Contains("\"medium\"", frame);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Set_thinking_level_frame_forwards_level_command_and_relays_confirmation()
+    {
+        var client = ModelClient();
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-setlevel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"set_thinking_level\",\"level\":\"high\"}");
+
+            var cmd = Assert.Single(client.Sent.OfType<SetThinkingLevelCommand>());
+            Assert.Equal("high", cmd.Level);
+
+            var frame = Assert.Single(ws.Sent);
+            Assert.Contains("\"type\":\"result\"", frame);
+            Assert.Contains("\"target\":\"set_thinking_level\"", frame);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Model_and_thinking_commands_are_scoped_to_attached_session()
+    {
+        // session a exposes model-a / low; session b exposes model-b / high. Changing
+        // a's model must not touch b, and each attached tab sees its own session's list.
+        var clientA = ModelClient("model-a", "low");
+        var clientB = ModelClient("model-b", "high");
+        var queued = new Queue<IPiRpcClient>(new IPiRpcClient[] { clientA, clientB });
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-iso-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => queued.Dequeue(), dir);
+            await mgr.InitAsync("a");
+            await mgr.InitAsync("b");
+
+            var wsA = new FakeWsClient();
+            var bridgeA = new WsBridge(mgr, "a", wsA);
+
+            await bridgeA.HandleMessageAsync("{\"type\":\"set_model\",\"provider\":\"anthropic\",\"modelId\":\"model-a\"}");
+            await bridgeA.HandleMessageAsync("{\"type\":\"set_thinking_level\",\"level\":\"low\"}");
+
+            // a's own child got both commands
+            Assert.Single(clientA.Sent.OfType<SetModelCommand>());
+            Assert.Single(clientA.Sent.OfType<SetThinkingLevelCommand>());
+            // b's child was never touched by a's selection
+            Assert.Empty(clientB.Sent.OfType<SetModelCommand>());
+            Assert.Empty(clientB.Sent.OfType<SetThinkingLevelCommand>());
+
+            // a tab attached to b sees b's OWN distinct available list
+            var wsB = new FakeWsClient();
+            var bridgeB = new WsBridge(mgr, "b", wsB);
+            await bridgeB.HandleMessageAsync("{\"type\":\"models\"}");
+
+            var frame = Assert.Single(wsB.Sent);
+            Assert.Contains("model-b", frame);
+            Assert.DoesNotContain("model-a", frame);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Model_command_to_recycled_session_reports_error()
+    {
+        var client = ModelClient();
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-modelrec-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+            await mgr.RecycleAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"models\"}");
+
+            var err = Assert.Single(ws.Sent);
+            Assert.Contains("\"error\"", err);
+            Assert.Contains("not running", err);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Rejected_set_model_sends_error_back_to_browser()
+    {
+        var rejecting = new FakePiRpcClient(cmd =>
+            cmd is SetModelCommand ? new RpcResponse("r1", "set_model", false, "model not found", null) : null);
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-modelrej-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => rejecting, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"set_model\",\"provider\":\"x\",\"modelId\":\"nope\"}");
+
+            var err = Assert.Single(ws.Sent);
+            Assert.Contains("\"error\"", err);
+            Assert.Contains("set_model rejected", err);
+            Assert.Contains("model not found", err);
+            // still forwarded the command to the child (it decided to reject server-side)
+            Assert.Single(rejecting.Sent.OfType<SetModelCommand>());
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
 }

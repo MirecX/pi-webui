@@ -188,6 +188,61 @@ public class SessionManagerTests
     }
 
     [Fact]
+    public async Task Model_and_thinking_commands_serialise_as_correct_json_lines()
+    {
+        // set_model: type + provider + modelId (exact rpc.md wire names)
+        var setModel = new SetModelCommand("anthropic", "claude-3-5-sonnet").ToJson("r1");
+        Assert.Contains("\"type\":\"set_model\"", setModel);
+        Assert.Contains("\"provider\":\"anthropic\"", setModel);
+        Assert.Contains("\"modelId\":\"claude-3-5-sonnet\"", setModel);
+
+        // set_thinking_level: type + level
+        var setLevel = new SetThinkingLevelCommand("high").ToJson("r2");
+        Assert.Contains("\"type\":\"set_thinking_level\"", setLevel);
+        Assert.Contains("\"level\":\"high\"", setLevel);
+
+        // list commands carry their own types
+        Assert.Contains("\"type\":\"get_available_models\"", new GetAvailableModelsCommand().ToJson());
+        Assert.Contains("\"type\":\"get_available_thinking_levels\"", new GetAvailableThinkingLevelsCommand().ToJson());
+        Assert.Contains("\"type\":\"cycle_model\"", new CycleModelCommand().ToJson());
+        Assert.Contains("\"type\":\"cycle_thinking_level\"", new CycleThinkingLevelCommand().ToJson());
+    }
+
+    [Fact]
+    public async Task Model_and_thinking_methods_forward_to_client()
+    {
+        using var h = new Harness();
+        var session = await h.Manager.InitAsync("default");
+        var client = h.Clients[0];
+
+        await session.GetAvailableModelsAsync();
+        await session.SetModelAsync("anthropic", "claude-3-5-sonnet");
+        await session.GetAvailableThinkingLevelsAsync();
+        await session.SetThinkingLevelAsync("high");
+
+        var setModel = Assert.Single(client.Sent.OfType<SetModelCommand>());
+        Assert.Equal("anthropic", setModel.Provider);
+        Assert.Equal("claude-3-5-sonnet", setModel.ModelId);
+        Assert.Single(client.Sent.OfType<GetAvailableModelsCommand>());
+        Assert.Single(client.Sent.OfType<GetAvailableThinkingLevelsCommand>());
+        Assert.Equal("high", Assert.Single(client.Sent.OfType<SetThinkingLevelCommand>()).Level);
+    }
+
+    [Fact]
+    public async Task Model_and_thinking_commands_on_recycled_session_throw_not_running()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.RecycleAsync("a");
+        var session = h.Manager.Get("a")!;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.GetAvailableModelsAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.SetModelAsync("a", "b"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.GetAvailableThinkingLevelsAsync());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.SetThinkingLevelAsync("high"));
+    }
+
+    [Fact]
     public async Task Turn_control_on_recycled_session_throws_not_running()
     {
         using var h = new Harness();

@@ -79,6 +79,52 @@ public sealed record SwitchSessionCommand(string SessionPath) : RpcCommand
 }
 
 // ---------------------------------------------------------------------------
+// Model + thinking switch (ticket #04) — wire format per rpc.md
+// ---------------------------------------------------------------------------
+
+/// <summary>Switch to a specific model. rpc.md: takes <c>provider</c> + <c>modelId</c>.</summary>
+public sealed record SetModelCommand(string Provider, string ModelId) : RpcCommand
+{
+    public override string Type => "set_model";
+    protected override void WriteExtra(Utf8JsonWriter w)
+    {
+        w.WriteString("provider", Provider);
+        w.WriteString("modelId", ModelId);
+    }
+}
+
+/// <summary>Cycle to the next available model.</summary>
+public sealed record CycleModelCommand : RpcCommand
+{
+    public override string Type => "cycle_model";
+}
+
+/// <summary>List all configured models (response data: <c>{ models: [...] }</c>).</summary>
+public sealed record GetAvailableModelsCommand : RpcCommand
+{
+    public override string Type => "get_available_models";
+}
+
+/// <summary>Set the reasoning/thinking level. rpc.md: takes <c>level</c>.</summary>
+public sealed record SetThinkingLevelCommand(string Level) : RpcCommand
+{
+    public override string Type => "set_thinking_level";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("level", Level);
+}
+
+/// <summary>Cycle through available thinking levels.</summary>
+public sealed record CycleThinkingLevelCommand : RpcCommand
+{
+    public override string Type => "cycle_thinking_level";
+}
+
+/// <summary>List thinking levels supported by the current model (response data: <c>{ levels: [...] }</c>).</summary>
+public sealed record GetAvailableThinkingLevelsCommand : RpcCommand
+{
+    public override string Type => "get_available_thinking_levels";
+}
+
+// ---------------------------------------------------------------------------
 // Response + events
 // ---------------------------------------------------------------------------
 
