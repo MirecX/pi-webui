@@ -1,4 +1,5 @@
 using System.Text.Json;
+using static PiWebui.JsonElementUtils;
 
 namespace PiWebui.Rpc;
 
@@ -40,7 +41,7 @@ public static class RpcEventParser
                 GetString(root, "id"), GetString(root, "method"), GetString(root, "title"),
                 GetString(root, "message"), GetString(root, "placeholder"), GetString(root, "prefill"),
                 Prop(root, "options")),
-            "response" => new ResponseEvent(
+            "response" => new RpcResponse(
                 GetString(root, "id"), GetString(root, "command") ?? "", GetBool(root, "success") ?? false,
                 GetString(root, "error"), Prop(root, "data")),
             _ => new UnknownEvent(type),
@@ -63,15 +64,4 @@ public static class RpcEventParser
 
         return new MessageUpdateEvent(Prop(root, "message"), ev, deltaType, delta);
     }
-
-    private static JsonElement? Prop(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var v) ? v.Clone() : null;
-
-    private static string? GetString(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static bool? GetBool(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? v.GetBoolean()
-            : null;
 }

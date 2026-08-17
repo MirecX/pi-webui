@@ -11,6 +11,7 @@ web/dist/
 
 # Runtime
 *.log
+.run/
 
 # OS
 .DS_Store

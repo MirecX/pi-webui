@@ -24,6 +24,9 @@ class Transcript {
   private readonly root: HTMLElement;
   private status: HTMLElement | null = null;
   private active: ActiveAssistant | null = null;
+  /** Rows created by tool_execution_start, keyed by toolCallId so updates and
+   * bash output can land in the same row instead of "the last row". */
+  private readonly toolRows = new Map<string, HTMLElement>();
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -60,28 +63,30 @@ class Transcript {
         break;
 
       case "tool_execution_start": {
-        const t = ev as { toolName?: string };
-        this.appendRow("tool", `${t.toolName ?? "tool"} …`, "tool-row");
+        const t = ev as { toolName?: string; toolCallId?: string };
+        const row = this.appendToolRow(t.toolName ?? "tool");
+        if (t.toolCallId) this.toolRows.set(t.toolCallId, row);
         break;
       }
       case "tool_execution_update": {
-        const p = (ev as { partialResult?: { content?: Array<{ text?: string }> } }).partialResult;
-        const text = p?.content?.map((c) => c.text ?? "").join("");
-        if (text && this.lastRow()) this.appendCode(this.lastRow()!, text);
+        const u = ev as { toolCallId?: string; partialResult?: { content?: Array<{ text?: string }> } };
+        const row = (u.toolCallId && this.toolRows.get(u.toolCallId)) ?? this.lastToolRow() ?? this.lastRow();
+        const text = u.partialResult?.content?.map((c) => c.text ?? "").join("");
+        if (row && text) this.appendCode(row, text);
         break;
       }
       case "tool_execution_end":
         break;
 
-      case "bash_execution_update":
-        this.appendCode(this.ensureBashRow(), String((ev as { delta?: string }).delta ?? ""));
-        break;
-
-      case "extension_ui_request": {
-        const m = ev as { method?: string; title?: string; message?: string };
-        this.appendRow(m.method ?? "ui", m.title ?? m.method ?? "request", "hitl-row");
+      case "bash_execution_update": {
+        const b = ev as { id?: string; delta?: string };
+        // Bash output renders inside the same row as its bash tool call (correlated
+        // by toolCallId/id); fall back to the last tool row / dedicated bash row.
+        const row = (b.id ? this.toolRows.get(b.id) : undefined) ?? this.lastToolRow() ?? this.ensureBashRow();
+        this.appendCode(row, String(b.delta ?? ""));
         break;
       }
+
       case "extension_error": {
         const e = ev as { error?: string };
         this.appendRow("error", String(e.error ?? "extension error"), "error-row");
@@ -116,8 +121,10 @@ class Transcript {
         }
         target = this.active.thinking.querySelector("pre");
       }
-    } else if (this.active) {
-      target = this.active.text;
+    } else {
+      // text_delta with no active assistant row: open one rather than dropping it.
+      if (!this.active) this.startAssistant();
+      if (this.active) target = this.active.text;
     }
     if (target && delta.delta) target.textContent += delta.delta;
   }
@@ -135,6 +142,23 @@ class Transcript {
     const body = el("div", text, "body");
     row.append(body);
     this.appendElement(row);
+  }
+
+  private appendToolRow(label: string): HTMLElement {
+    const row = el("div", undefined, "row tool-row");
+    row.append(el("span", label, "role"));
+    row.append(el("div", undefined, "body-mono"));
+    this.appendElement(row);
+    return row;
+  }
+
+  private lastToolRow(): HTMLElement | null {
+    const children = this.root.children;
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i] as HTMLElement;
+      if (child.classList.contains("tool-row")) return child;
+    }
+    return null;
   }
 
   private appendCode(row: HTMLElement, text: string): void {

@@ -65,6 +65,26 @@ public class WsBridgeTests
     }
 
     [Fact]
+    public async Task Rejected_prompt_sends_error_back_to_browser()
+    {
+        var fake = new FakePiRpcClient(cmd => cmd is PromptCommand
+            ? new RpcResponse("r1", "prompt", false, "model busy", null)
+            : null);
+        await using var session = new SessionManager(fake);
+        session.Start();
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(session, ws);
+
+        await bridge.HandleMessageAsync(PromptJson);
+
+        var err = Assert.Single(ws.Sent);
+        Assert.Contains("\"error\"", err);
+        Assert.Contains("prompt rejected", err);
+        Assert.Contains("model busy", err);
+    }
+
+    [Fact]
     public async Task Inbound_loop_dispatches_prompt_from_browser()
     {
         var fake = new FakePiRpcClient();

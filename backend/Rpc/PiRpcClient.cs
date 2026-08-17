@@ -115,13 +115,12 @@ public sealed class PiRpcClient : IPiRpcClient
                 continue; // malformed line from child -> ignore, keep going
             }
 
-            if (ev is ResponseEvent resp)
+            if (ev is RpcResponse resp)
             {
                 TaskCompletionSource<RpcResponse>? tcs = null;
                 if (resp.Id is not null && _pending.TryGetValue(resp.Id, out var found) && _pending.Remove(resp.Id))
                     tcs = found;
-                var self = new RpcResponse(resp.Id, resp.Command, resp.Success, resp.Error, resp.Data);
-                tcs?.TrySetResult(self);
+                tcs?.TrySetResult(resp);
                 // responses without a pending id are dropped (rare/accepted)
             }
             else
@@ -136,11 +135,4 @@ public sealed class PiRpcClient : IPiRpcClient
         try { await stderr.ReadToEndAsync().ConfigureAwait(false); }
         catch { /* ignore child stderr */ }
     }
-}
-
-/// <summary>Typed, id-correlated command response.</summary>
-public sealed record RpcResponse(string? Id, string Command, bool Success, string? Error, JsonElement? Data)
-{
-    /// <summary>Data rendered as JSON string, or null.</summary>
-    public string? DataJson => Data is { } d ? d.GetRawText() : null;
 }

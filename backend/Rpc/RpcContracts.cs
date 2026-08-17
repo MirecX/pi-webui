@@ -63,9 +63,17 @@ public abstract record RpcEvent
     public string Raw { get; set; } = "";
 }
 
-public sealed record ResponseEvent(string? Id, string Command, bool Success, string? Error, JsonElement? Data) : RpcEvent
+/// <summary>
+/// A <c>response</c> event: the id-correlated reply to a command. One shared type
+/// used both by the event parser and by <see cref="PiRpcClient.SendAsync"/> to
+/// resolve pending commands (no identity conversion between them).
+/// </summary>
+public sealed record RpcResponse(string? Id, string Command, bool Success, string? Error, JsonElement? Data) : RpcEvent
 {
     public override string Type => "response";
+
+    /// <summary>Data rendered as a JSON string, or null.</summary>
+    public string? DataJson => Data is { } d ? d.GetRawText() : null;
 }
 
 public sealed record AgentStartEvent : RpcEvent

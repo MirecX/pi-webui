@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using static PiWebui.JsonElementUtils;
 
 namespace PiWebui;
 
@@ -91,10 +92,4 @@ public sealed record Config(string Token, int Port)
         Random.Shared.NextBytes(bytes);
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
-
-    private static string? GetString(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static int? GetInt(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : null;
 }

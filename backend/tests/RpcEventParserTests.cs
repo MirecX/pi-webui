@@ -129,7 +129,7 @@ public class RpcEventParserTests
     public void Parses_response_and_preserves_raw()
     {
         var line = @"{""id"":""r1"",""type"":""response"",""command"":""prompt"",""success"":true}";
-        var ev = Assert.IsType<ResponseEvent>(RpcEventParser.Parse(line));
+        var ev = Assert.IsType<RpcResponse>(RpcEventParser.Parse(line));
         Assert.Equal("r1", ev.Id);
         Assert.Equal("prompt", ev.Command);
         Assert.True(ev.Success);
@@ -139,7 +139,7 @@ public class RpcEventParserTests
     [Fact]
     public void Parses_response_with_data()
     {
-        var ev = Assert.IsType<ResponseEvent>(RpcEventParser.Parse(
+        var ev = Assert.IsType<RpcResponse>(RpcEventParser.Parse(
             @"{""type"":""response"",""command"":""get_state"",""success"":true,""data"":{""isStreaming"":false}}"));
         Assert.False(ev.Data!.Value.GetProperty("isStreaming").GetBoolean());
     }

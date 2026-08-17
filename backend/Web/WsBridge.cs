@@ -59,7 +59,17 @@ public sealed class WsBridge
         {
             var message = msgProp.GetString();
             if (message is not null)
-                await _session.PromptAsync(message);
+            {
+                var resp = await _session.PromptAsync(message);
+                // A correlated, non-success response means the prompt was rejected
+                // server-side. Surface it to the browser so a rejection isn't silent.
+                if (resp is not null && !resp.Success)
+                    await _client.SendAsync(JsonSerializer.Serialize(new
+                    {
+                        type = "error",
+                        message = $"prompt rejected: {resp.Error ?? "unknown error"}",
+                    }), default);
+            }
         }
         // ticket #01 only supports prompt; abort/steer/etc. arrive in later tickets.
     }

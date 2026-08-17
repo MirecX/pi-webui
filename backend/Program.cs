@@ -51,7 +51,9 @@ else
     app.UseStaticFiles(new StaticFileOptions { FileProvider = provider });
 }
 
-Console.WriteLine($"[pi-webui] up. token={config.Token}  ws=ws://localhost:{config.Port}/ws  ui=http://localhost:{config.Port}/");
+// The full token is echoed only on first-run generation (see Config.Load); it is
+// intentionally not re-printed on every startup.
+Console.WriteLine($"[pi-webui] up.  ws=ws://localhost:{config.Port}/ws  ui=http://localhost:{config.Port}/");
 await app.RunAsync();
 
 /// Helper for resolving the built-frontend directory.
