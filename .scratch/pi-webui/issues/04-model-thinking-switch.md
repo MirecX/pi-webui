@@ -6,7 +6,7 @@ Each session has pickers for the active model and the thinking level, backed by 
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Available models and thinking levels are listed per session
 - [ ] Selecting a model or thinking level issues the RPC change and the UI reflects it

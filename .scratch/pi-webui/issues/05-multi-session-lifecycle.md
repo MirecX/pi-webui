@@ -6,7 +6,7 @@ You can run multiple named sessions concurrently, each backed by its own `pi --m
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Initialize creates a named session with its own pi child
 - [ ] Multiple named sessions run concurrently; a tab attaches to one session's stream

@@ -6,7 +6,7 @@ A session list lets you browse stored sessions and resume, fork, and clone them 
 
 **Blocked by:** 05 — Multi-session lifecycle
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Stored sessions are listable and openable/resumable
 - [ ] A session can be forked from or cloned, creating a new branch

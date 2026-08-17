@@ -6,7 +6,7 @@ When the running agent asks something that needs the human — pi's `select`/`co
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `select`/`confirm` requests render as modals and answers are sent back
 - [ ] `input`/`editor` requests accept freeform text and return it

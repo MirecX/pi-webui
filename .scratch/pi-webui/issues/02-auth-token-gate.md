@@ -6,7 +6,7 @@ The network service is safe by default: every HTTP request and WebSocket handsha
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Config file holds token + port; token auto-generated and printed on first run
 - [ ] Every HTTP request and WS handshake requires the token; invalid/missing rejected

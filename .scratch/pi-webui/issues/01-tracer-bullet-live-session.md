@@ -6,7 +6,7 @@ Open the web UI and see a live pi coding-agent session: the server (running deta
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `pi` RPC child spawns with the correct working directory and container user, and its JSONL framing is read/written correctly
 - [ ] Live events (agent start/end, message streaming, tool calls, bash output) reach the browser over WebSocket

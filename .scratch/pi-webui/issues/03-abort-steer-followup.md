@@ -6,7 +6,7 @@ From the web UI you can interrupt a running turn, and queue steering or follow-u
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Abort interrupts an in-flight turn and the UI reflects "stopped"
 - [ ] Steering a message during a run is queued and delivered before the next LLM call

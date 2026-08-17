@@ -6,7 +6,7 @@ Advanced session management from the web: run compaction on a session, toggle au
 
 **Blocked by:** 01 — Tracer bullet: live session in browser
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] Compaction can be triggered on a session, with auto-compaction toggles
 - [ ] Auto-retry on/off is controllable
