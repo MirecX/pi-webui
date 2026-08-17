@@ -93,12 +93,6 @@ public sealed record SetModelCommand(string Provider, string ModelId) : RpcComma
     }
 }
 
-/// <summary>Cycle to the next available model.</summary>
-public sealed record CycleModelCommand : RpcCommand
-{
-    public override string Type => "cycle_model";
-}
-
 /// <summary>List all configured models (response data: <c>{ models: [...] }</c>).</summary>
 public sealed record GetAvailableModelsCommand : RpcCommand
 {
@@ -110,12 +104,6 @@ public sealed record SetThinkingLevelCommand(string Level) : RpcCommand
 {
     public override string Type => "set_thinking_level";
     protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("level", Level);
-}
-
-/// <summary>Cycle through available thinking levels.</summary>
-public sealed record CycleThinkingLevelCommand : RpcCommand
-{
-    public override string Type => "cycle_thinking_level";
 }
 
 /// <summary>List thinking levels supported by the current model (response data: <c>{ levels: [...] }</c>).</summary>

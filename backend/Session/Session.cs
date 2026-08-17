@@ -97,9 +97,13 @@ public sealed class Session : IAsyncDisposable
     public Task<RpcResponse?> SetModelAsync(string provider, string modelId, CancellationToken ct = default)
         => SendCommand(() => new SetModelCommand(provider, modelId), "set_model", ct);
 
-    /// <summary>Cycle this session to the next available model.</summary>
-    public Task<RpcResponse?> CycleModelAsync(CancellationToken ct = default)
-        => SendCommand(() => new CycleModelCommand(), "cycle_model", ct);
+    /// <summary>
+    /// Fetch this session's current state (rpc.md <c>get_state</c>), which exposes the
+    /// actual current <c>model</c> and <c>thinkingLevel</c> so the UI can reflect the
+    /// attached session's real selection across reconnect/tab-switch (ticket #04).
+    /// </summary>
+    public Task<RpcResponse?> GetStateAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetStateCommand(), "get_state", ct);
 
     /// <summary>List the thinking levels supported by this session's current model.</summary>
     public Task<RpcResponse?> GetAvailableThinkingLevelsAsync(CancellationToken ct = default)
@@ -108,10 +112,6 @@ public sealed class Session : IAsyncDisposable
     /// <summary>Set this session's thinking/reasoning level.</summary>
     public Task<RpcResponse?> SetThinkingLevelAsync(string level, CancellationToken ct = default)
         => SendCommand(() => new SetThinkingLevelCommand(level), "set_thinking_level", ct);
-
-    /// <summary>Cycle this session's thinking level.</summary>
-    public Task<RpcResponse?> CycleThinkingLevelAsync(CancellationToken ct = default)
-        => SendCommand(() => new CycleThinkingLevelCommand(), "cycle_thinking_level", ct);
 
     /// <summary>
     /// Send a single command to this session's own child and await its correlated

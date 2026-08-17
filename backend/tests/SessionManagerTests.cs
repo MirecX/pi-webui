@@ -204,8 +204,6 @@ public class SessionManagerTests
         // list commands carry their own types
         Assert.Contains("\"type\":\"get_available_models\"", new GetAvailableModelsCommand().ToJson());
         Assert.Contains("\"type\":\"get_available_thinking_levels\"", new GetAvailableThinkingLevelsCommand().ToJson());
-        Assert.Contains("\"type\":\"cycle_model\"", new CycleModelCommand().ToJson());
-        Assert.Contains("\"type\":\"cycle_thinking_level\"", new CycleThinkingLevelCommand().ToJson());
     }
 
     [Fact]
@@ -217,6 +215,7 @@ public class SessionManagerTests
 
         await session.GetAvailableModelsAsync();
         await session.SetModelAsync("anthropic", "claude-3-5-sonnet");
+        await session.GetStateAsync();
         await session.GetAvailableThinkingLevelsAsync();
         await session.SetThinkingLevelAsync("high");
 
@@ -224,6 +223,8 @@ public class SessionManagerTests
         Assert.Equal("anthropic", setModel.Provider);
         Assert.Equal("claude-3-5-sonnet", setModel.ModelId);
         Assert.Single(client.Sent.OfType<GetAvailableModelsCommand>());
+        // get_state is sent here plus once by InitAsync for session-file discovery.
+        Assert.Equal(2, client.Sent.OfType<GetStateCommand>().Count());
         Assert.Single(client.Sent.OfType<GetAvailableThinkingLevelsCommand>());
         Assert.Equal("high", Assert.Single(client.Sent.OfType<SetThinkingLevelCommand>()).Level);
     }

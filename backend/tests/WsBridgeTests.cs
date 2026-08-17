@@ -685,6 +685,43 @@ public class WsBridgeTests
     }
 
     [Fact]
+    public async Task Get_state_frame_relays_current_model_and_thinking_level_to_browser()
+    {
+        // rpc.md get_state exposes the session's ACTUAL current model + thinkingLevel, which
+        // the frontend uses to restore its pickers on reconnect/tab-switch (ticket #04).
+        var client = new FakePiRpcClient(cmd =>
+            cmd is GetStateCommand
+                ? new RpcResponse("gs", "get_state", true, null,
+                    JsonDocument.Parse(
+                        "{\"model\":{\"id\":\"claude-3-5-sonnet\",\"provider\":\"anthropic\",\"name\":\"Claude 3.5\"},\"thinkingLevel\":\"high\"}").RootElement)
+                : null);
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-getstate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => client, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync("{\"type\":\"get_state\"}");
+
+            // get_state is sent here plus once by InitAsync for session-file discovery.
+            Assert.Equal(2, client.Sent.OfType<GetStateCommand>().Count());
+            var frame = Assert.Single(ws.Sent);
+            Assert.Contains("\"type\":\"result\"", frame);
+            Assert.Contains("\"target\":\"get_state\"", frame);
+            Assert.Contains("claude-3-5-sonnet", frame); // the current model restored
+            Assert.Contains("\"thinkingLevel\":\"high\"", frame); // the current level restored
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Set_model_frame_forwards_command_with_provider_and_modelid_and_relays_confirmation()
     {
         var client = ModelClient("claude-3-5-sonnet");

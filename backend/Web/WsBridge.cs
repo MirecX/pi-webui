@@ -163,6 +163,11 @@ public sealed class WsBridge
                     await DispatchModelCommandAsync("set_model", s => s.SetModelAsync(provider, modelId)).ConfigureAwait(false);
                 }
                 break;
+            case "get_state":
+                // Fetch the attached session's actual current selection (model + thinkingLevel)
+                // so the browser can restore its pickers on reconnect/tab-switch (ticket #04).
+                await DispatchModelCommandAsync("get_state", s => s.GetStateAsync()).ConfigureAwait(false);
+                break;
             case "thinking_levels":
                 await DispatchModelCommandAsync("thinking_levels", s => s.GetAvailableThinkingLevelsAsync()).ConfigureAwait(false);
                 break;
@@ -219,46 +224,11 @@ public sealed class WsBridge
 
     /// <summary>
     /// Run one turn-control command (prompt/steer/follow_up/abort) against the attached
-    /// session's child. Shared error handling keeps every turn command consistent:
-    /// genuine failures surface to the browser; expected teardown stays quiet.
+    /// session's child. Delegate to the shared dispatcher; turn commands relay nothing on
+    /// success (a rejection surfaces as an error only).
     /// </summary>
-    private async Task DispatchTurnAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
-    {
-        var s = _sessions.Get(_sessionName);
-        if (s is null || !s.IsRunning)
-        {
-            await SendErrorAsync($"session '{_sessionName}' is not running; initialize it first").ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            var resp = await send(s).ConfigureAwait(false);
-            // A correlated, non-success response means the command was rejected
-            // server-side; surface it so a rejection isn't silent.
-            if (resp is { Success: false })
-                await SendErrorAsync($"{action} rejected: {resp.Error ?? "unknown error"}").ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            await SendErrorAsync(ex.Message).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // A pending command was cancelled. If the session is STILL live this is a
-            // genuine per-command failure (e.g. the child was killed mid-command) and the
-            // browser must hear about it rather than have it silently dropped. If the
-            // session is no longer running the command was cancelled by an explicit
-            // recycle/delete teardown, which the lifecycle event already covers.
-            if (s.IsRunning)
-                await SendErrorAsync($"{action} cancelled; the session stopped before it could respond").ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // Any other genuine per-command failure: surface it instead of dropping it.
-            await SendErrorAsync($"{action} failed: {ex.Message}").ConfigureAwait(false);
-        }
-    }
+    private Task DispatchTurnAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
+        => DispatchAsync(action, send, onSuccess: null);
 
     private async Task HandleLifecycleAsync(string type, string name)
     {
@@ -313,13 +283,18 @@ public sealed class WsBridge
     }
 
     /// <summary>
-    /// Run one model/thinking command (models/set_model/thinking_levels/set_thinking_level)
-    /// against the attached session's child. Shares the turn-control error convention:
-    /// genuine failures surface to the browser; expected teardown stays quiet. On success
-    /// the RPC response <c>data</c> is relayed back to the browser as a <c>result</c> frame
-    /// so it can populate the available lists and reflect the applied selection.
+    /// Shared dispatch core for EVERY inbound command against the attached session's
+    /// child (turn-controls, model/thinking commands, get_state). ONE guard + ONE error
+    /// ladder keeps all commands consistent: the attached session must be running;
+    /// genuine failures surface to the browser; expected teardown stays quiet. Only the
+    /// success handling differs, parameterised via <paramref name="onSuccess"/> so e.g.
+    /// model/thinking commands relay their <c>result</c> frame while turn commands stay
+    /// silent.
     /// </summary>
-    private async Task DispatchModelCommandAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
+    private async Task DispatchAsync(
+        string action,
+        Func<PiWebui.Session.Session, Task<RpcResponse?>> send,
+        Func<string, RpcResponse?, Task>? onSuccess = null)
     {
         var s = _sessions.Get(_sessionName);
         if (s is null || !s.IsRunning)
@@ -331,12 +306,15 @@ public sealed class WsBridge
         try
         {
             var resp = await send(s).ConfigureAwait(false);
+            // A correlated, non-success response means the command was rejected
+            // server-side; surface it so a rejection isn't silent.
             if (resp is { Success: false })
             {
                 await SendErrorAsync($"{action} rejected: {resp.Error ?? "unknown error"}").ConfigureAwait(false);
                 return;
             }
-            await SendResultAsync(action, resp?.DataJson).ConfigureAwait(false);
+            if (onSuccess is not null)
+                await onSuccess(action, resp).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -344,14 +322,31 @@ public sealed class WsBridge
         }
         catch (OperationCanceledException)
         {
+            // A pending command was cancelled. If the session is STILL live this is a
+            // genuine per-command failure (e.g. the child was killed mid-command) and the
+            // browser must hear about it rather than have it silently dropped. If the
+            // session is no longer running the command was cancelled by an explicit
+            // recycle/delete teardown, which the lifecycle event already covers.
             if (s.IsRunning)
                 await SendErrorAsync($"{action} cancelled; the session stopped before it could respond").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            // Any other genuine per-command failure: surface it instead of dropping it.
             await SendErrorAsync($"{action} failed: {ex.Message}").ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Run one model/thinking/state command (models/set_model/thinking_levels/set_thinking_level/get_state)
+    /// against the attached session's child. Delegate to the shared dispatcher with a
+    /// success handler that relays the RPC response <c>data</c> back to the browser as a
+    /// <c>result</c> frame so it can populate the available lists and reflect the applied
+    /// selection.
+    /// </summary>
+    private Task DispatchModelCommandAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
+        => DispatchAsync(action, send, (a, resp) => SendResultAsync(a, resp?.DataJson));
+
 
     /// <summary>
     /// Push a <c>result</c> frame to the browser: <c>{ "type": "result", "target": action, "data": &lt;raw rpc data&gt; }</c>.

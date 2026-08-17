@@ -425,7 +425,25 @@ function setup(): void {
             availableModels = [...availableModels, currentModel];
           }
           renderPickers();
+          // Thinking levels depend on the selected model (rpc.md): re-fetch the list
+          // for the newly-applied model so the picker reflects its supported levels.
+          wsSend({ type: "thinking_levels" });
         }
+        break;
+      }
+      case "get_state": {
+        // Restore the attached session's ACTUAL current selection on reconnect/tab-switch
+        // (rpc.md get_state exposes model + thinkingLevel), so the pickers reflect what the
+        // session is really using rather than showing nothing. Per-session.
+        const d = r.data as { model?: ModelInfo | null; thinkingLevel?: string } | undefined;
+        if (d?.model) {
+          currentModel = d.model;
+          if (d.model && !availableModels.some((m) => modelKey(m) === modelKey(d.model!))) {
+            availableModels = [...availableModels, d.model];
+          }
+        }
+        currentThinkingLevel = d?.thinkingLevel ?? null;
+        renderPickers();
         break;
       }
       case "set_thinking_level":
@@ -501,6 +519,9 @@ function setup(): void {
       renderPickers();
       wsSend({ type: "models" });
       wsSend({ type: "thinking_levels" });
+      // Fetch the attached session's actual current model + thinking level so the pickers
+      // are restored to the real selection (not left empty) after connect/tab-switch.
+      wsSend({ type: "get_state" });
     };
     socket.onmessage = (evt) => {
       let obj: RpcEvent;
