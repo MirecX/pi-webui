@@ -64,6 +64,36 @@ interface ActiveAssistant {
   thinking: HTMLElement | null;
 }
 
+/** Extract visible text from a pi content block (or string). Never yields "[object Object]". */
+function blockText(block: unknown): string {
+  if (typeof block === "string") return block;
+  if (!block || typeof block !== "object") return "";
+  const b = block as Record<string, any>;
+  switch (b.type) {
+    case "text":
+      return String(b.text ?? "");
+    case "image":
+      return "[image]";
+    case "tool_result": {
+      // tool_result content may be a string or an array of blocks
+      const c = b.content;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) return c.map(blockText).filter(Boolean).join("\n");
+      return "";
+    }
+    default:
+      return "";
+  }
+}
+
+/** Render a message `content` (string or block array) to plain visible text. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(blockText).filter(Boolean).join("\n");
+  if (content && typeof content === "object") return blockText(content);
+  return "";
+}
+
 /** Live, updating transcript renderer driven by RPC events. */
 class Transcript {
   private readonly root: HTMLElement;
@@ -98,10 +128,9 @@ class Transcript {
         break;
 
       case "message_start": {
-        const msg = ev.message as { role?: string } | undefined;
-        const role = msg?.role ?? "message";
-        if (role === "assistant") this.startAssistant();
-        else this.appendRow(role === "user" ? "You" : role, String((msg as { content?: unknown })?.content ?? ""));
+        const msg = (ev as { message?: { role?: string; content?: unknown } | undefined }).message;
+        if ((msg?.role ?? "message") === "assistant") this.startAssistant();
+        this.renderBlocks(msg?.content, msg?.role ?? "message");
         break;
       }
       case "message_update":
@@ -116,8 +145,11 @@ class Transcript {
 
       case "tool_execution_start": {
         const t = ev as { toolName?: string; toolCallId?: string };
-        const row = this.appendToolRow(t.toolName ?? "tool");
-        if (t.toolCallId) this.toolRows.set(t.toolCallId, row);
+        // Reuse a row already created by a tool_use content block (same toolCallId) so the
+        // tool isn't rendered twice; otherwise create the tool row now.
+        const existing = t.toolCallId ? this.toolRows.get(t.toolCallId) : undefined;
+        const row = existing ?? this.appendToolRow(t.toolName ?? "tool");
+        if (!existing && t.toolCallId) this.toolRows.set(t.toolCallId, row);
         break;
       }
       case "tool_execution_update": {
@@ -154,6 +186,48 @@ class Transcript {
     row.append(body);
     this.appendElement(row);
     this.active = { text: body, thinking: null };
+  }
+
+  /** Render a message's content blocks (text / tool_use / tool_result / image) correctly. */
+  private renderBlocks(content: unknown, role: string): void {
+    const blocks = Array.isArray(content) ? content : content == null ? [] : [content];
+    for (const blk of blocks) {
+      if (typeof blk === "string") {
+        if (this.active && role === "assistant") this.active.text.textContent += blk;
+        else this.appendRow(role === "user" ? "You" : role, blk);
+        continue;
+      }
+      if (!blk || typeof blk !== "object") continue;
+      const b = blk as Record<string, any>;
+      if (b.type === "text") {
+        const t = String(b.text ?? "");
+        if (role === "assistant" && this.active) this.active.text.textContent += t;
+        else if (t) this.appendRow(role === "user" ? "You" : role, t);
+      } else if (b.type === "tool_use") {
+        const row = this.appendToolRow(`>>> ${b.name ?? "tool"}`);
+        if (b.id) this.toolRows.set(String(b.id), row);
+        // prettier the payload (e.g. bash: show the command JSON); fall back to raw input otherwise
+        let code: string;
+        try {
+          code = JSON.stringify(b.input, null, 2);
+        } catch {
+          code = String(b.input ?? "");
+        }
+        this.appendCode(row, code);
+      } else if (b.type === "tool_result") {
+        const text = contentText(b.content);
+        const row = (b.tool_use_id && this.toolRows.get(String(b.tool_use_id))) ?? this.lastToolRow();
+        if (row) this.appendCode(row, text);
+        else if (text) this.appendRow("tool result", text);
+      } else if (b.type === "image") {
+        if (!this.active) this.startAssistant();
+        this.appendRow("image", "[image]");
+      } else {
+        // unknown/future block: fall back to text if it has any, never "[object Object]"
+        const t = contentText(b) || (b.thinking ? String(b.thinking) : "");
+        if (t && role !== "assistant") this.appendRow(role === "user" ? "You" : role, t);
+      }
+    }
   }
 
   private update(ev: MessageUpdateEvent): void {
@@ -273,6 +347,10 @@ function setup(): void {
   const cloneBtn = document.querySelector<HTMLButtonElement>("#clone")!;
 
   const token = readToken();
+
+  // Refresh the session panel periodically while a session is active, so stats/state/
+  // structure stay live during a run (they aren't otherwise pushed by the agent).
+  setInterval(() => { if (active) refreshPanel(); }, 5000);
 
   // --- controller ----------------------------------------------------------
   const sessions = new Map<string, SessionInfo>(); // name -> info
@@ -743,6 +821,7 @@ function setup(): void {
       aborting = false;
       stopped = false;
       renderAgentState();
+      refreshPanel(); // stats/state/structure are stale after a run ends — refetch now
     } else if (obj.type === "queue_update") {
       const q = obj as { steering?: unknown[]; followUp?: unknown[] };
       queuedSteer = Array.isArray(q.steering) ? q.steering.length : 0;
