@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pi-webui</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>pi-webui</h1>
+      <span id="app" class="ws-status-wrap"></span>
+    </header>
+    <main>
+      <div id="transcript" class="transcript" aria-live="polite"></div>
+      <form id="composer" class="composer">
+        <textarea
+          id="prompt"
+          rows="3"
+          placeholder="Send a prompt to the agent… (Enter to send, Shift+Enter for newline)"
+        ></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

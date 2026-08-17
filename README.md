@@ -18,17 +18,37 @@ See **[DESIGN.md](DESIGN.md)** for the full architecture and decision record.
 # in the container (yolo user)
 git clone https://github.com/MirecX/pi-webui ~/.pi/agent/extensions/pi-webui
 cd ~/.pi/agent/extensions/pi-webui
-make install      # builds C# backend + TS frontend
-make start        # starts the server (token written to config.json, printed once)
+make build      # builds C# backend + TS frontend
+make run        # runs the server (token written to config.json, printed once)
 ```
 
-Open `http://<box-ip>:<HOST_PORT+10000>` (e.g. `32223`) and use the token.
+The server loads `~/.pi/agent/extensions/pi-webui/config.json` (fallback to repo
+`./config.json`), auto-generating + printing a token on first run (auth is
+enforced in ticket #02). Open `http://<box-ip>:<PORT>` and watch the live session;
+the send box prompts the agent and the reply streams back. (External reachability
+= SSH host port + 10000, opt-in — DESIGN.md §6.)
+
+## Development
+
+```bash
+make build-backend   # dotnet build (Release)
+make build-frontend  # npm install + tsc build into web/dist
+make test            # dotnet test (fake-pi seams, no real pi needed)
+```
+
+Tests exercise the two seams against a scripted fake `pi` process
+(`backend/tests/fixtures/fake-pi.mjs`) plus the in-process fake client:
+RPC-client framing/parsing and the WebSocket relay, so no real `pi` child is
+required. The tracer bullet (ticket #01) manages one default session; later
+tickets add auth, abort/steer, models, multi-session, and HITL dialogs.
 
 ## Layout
 
 ```
-backend/     C# / ASP.NET Core server (RPC client, session manager, WS, auth)
-web/         TypeScript frontend (streaming renderer)
+backend/     C# / ASP.NET Core server (config, RPC client, session mgr, WS, static)
+backend/tests  xUnit tests + fake-pi fixture
+web/         TypeScript frontend (streaming renderer, src/ -> dist/)
+Makefile     build/run/test launcher
 DESIGN.md    architecture + decisions
 ```
 

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>PiWebui</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>pi-webui</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- tests live in their own project; exclude from the web project's default globbing -->
+    <Compile Remove="tests/**" />
+    <EmbeddedResource Remove="tests/**" />
+    <Content Remove="tests/**" />
+    <None Remove="tests/**" />
+  </ItemGroup>
+
+</Project>
