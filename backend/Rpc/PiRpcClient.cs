@@ -63,13 +63,7 @@ public sealed class PiRpcClient : IPiRpcClient
 
         lock (_pending) _pending[id] = tcs;
 
-        lock (_sendLock)
-        {
-            _stdin!.Write(command.ToJson(id));
-            _stdin.Write('\n');
-            _stdin.Flush();
-        }
-
+        Write(command.ToJson(id));
         ct.ThrowIfCancellationRequested();
         return await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
     }
@@ -78,13 +72,23 @@ public sealed class PiRpcClient : IPiRpcClient
     {
         // Fire-and-forget (e.g. extension_ui_response): write only, no pending
         // correlation, so we never await a response pi will not send.
+        Write(command.ToJson());
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Serialize + write a single command line to the child's stdin under the shared send
+    /// lock. Both <see cref="SendAsync"/> and fire-and-forget writes go through here so the
+    /// framing + flush surface stays identical for every outbound command.
+    /// </summary>
+    private void Write(string json)
+    {
         lock (_sendLock)
         {
-            _stdin!.Write(command.ToJson());
+            _stdin!.Write(json);
             _stdin.Write('\n');
             _stdin.Flush();
         }
-        return Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()

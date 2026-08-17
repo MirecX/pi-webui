@@ -147,32 +147,37 @@ public sealed class Session : IAsyncDisposable
     /// select/input/editor, <c>confirmed</c> answers confirm, <c>cancelled</c> dismisses
     /// any dialog.
     /// </summary>
-    public async Task RespondHitlAsync(string requestId, string? value = null, bool? confirmed = null, bool cancelled = false, CancellationToken ct = default)
-    {
-        var client = _client
-            ?? throw new InvalidOperationException($"session '{Name}' is not running; initialize it first");
-        try
-        {
-            await client.SendFireAndForgetAsync(
-                new ExtensionUiResponseCommand(requestId, value, confirmed, cancelled), ct).ConfigureAwait(false);
-        }
-        catch (ObjectDisposedException)
-        {
-            throw new InvalidOperationException($"session '{Name}' was recycled; re-initialize it to continue");
-        }
-    }
+    public Task RespondHitlAsync(string requestId, string? value = null, bool? confirmed = null, bool cancelled = false, CancellationToken ct = default)
+        // Routes through SendCommandCore so the guard + ObjectDisposed ladder stays identical to
+        // every other command (they can't drift). Fire-and-forget: pi sends no correlated response,
+        // so this writes only and never awaits.
+        => SendCommandCore(() => new ExtensionUiResponseCommand(requestId, value, confirmed, cancelled), "hitl_response", fireAndForget: true, ct);
 
     /// <summary>
     /// Send a single command to this session's own child and await its correlated
     /// response. Shared by all turn-control methods so their error handling stays
     /// identical to <c>prompt</c> (genuine errors surfaced, expected teardown quiet).
     /// </summary>
-    private async Task<RpcResponse?> SendCommand(Func<RpcCommand> build, string action, CancellationToken ct)
+    private Task<RpcResponse?> SendCommand(Func<RpcCommand> build, string action, CancellationToken ct)
+        => SendCommandCore(build, action, fireAndForget: false, ct);
+
+    /// <summary>
+    /// Shared command core for every outbound command: the not-running guard, the write, and
+    /// the ObjectDisposed → InvalidOperation teardown ladder. Correlated sends (via
+    /// <see cref="SendAsync"/>) and fire-and-forget sends (via <see cref="SendFireAndForgetAsync"/>,
+    /// e.g. HITL <c>extension_ui_response</c>) route through here so the two ladders don't drift.
+    /// </summary>
+    private async Task<RpcResponse?> SendCommandCore(Func<RpcCommand> build, string action, bool fireAndForget, CancellationToken ct)
     {
         var client = _client
             ?? throw new InvalidOperationException($"session '{Name}' is not running; initialize it first");
         try
         {
+            if (fireAndForget)
+            {
+                await client.SendFireAndForgetAsync(build(), ct).ConfigureAwait(false);
+                return null;
+            }
             return await client.SendAsync(build(), ct).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)

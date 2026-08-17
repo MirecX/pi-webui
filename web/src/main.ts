@@ -286,6 +286,12 @@ function setup(): void {
   // pending modal (or none), and answering goes out over the attached session's WS.
   const pendingModals = new Map<string, HitlRequest>();
 
+  // HITL answers buffered while the WS is not OPEN (mid-reconnect), keyed by session name,
+  // so an answer is never silently dropped mid-reconnect and the agent left blocked. Flushed
+  // on the next (re)connect to the same session. Bounded per session: at most one dialog can
+  // be pending per session, so at most one buffered answer per session.
+  const pendingAnswers = new Map<string, { id: string; payload: Record<string, unknown> }>();
+
 
   // --- model + thinking pickers (ticket #04) --------------------------------
   const modelSelect = document.querySelector<HTMLSelectElement>("#model-select")!;
@@ -525,15 +531,30 @@ function setup(): void {
   function handleFrame(obj: RpcEvent): void {
     if (obj.type === "session_event") {
       const s = obj.session as SessionInfo;
-      if (s.status === "deleted") sessions.delete(s.name);
-      else {
+      let modalDirty = false;
+      if (s.status === "deleted") {
+        sessions.delete(s.name);
+        // drop any stale per-session pending dialog so a deleted session's request never
+        // lingers or resurfaces after the tab switches back to a (recreated) session
+        modalDirty = pendingModals.delete(s.name);
+      } else {
         const prev = sessions.get(s.name);
         // merge so a title-only event (auto-title, ticket #06) keeps the known status/name
         sessions.set(s.name, { name: s.name, status: s.status, title: s.title ?? prev?.title });
+        if (s.status === "recycled") {
+          // a recycled session's child is gone, so its pending dialog (and any buffered
+          // answer) can no longer be answered/resolved from the UI — clear them, not stale
+          modalDirty = pendingModals.delete(s.name);
+          pendingAnswers.delete(s.name);
+        }
       }
 
       if (s.name === active && s.status === "deleted") fallbackAfterActiveDeleted();
-      else renderSessions();
+      else {
+        renderSessions();
+        // reflect a just-cleared stale modal for the attached session (close the overlay)
+        if (modalDirty && s.name === active) renderHitlModal();
+      }
       return;
     }
     if (obj.type === "error") {
@@ -612,6 +633,13 @@ function setup(): void {
       // Fetch the attached session's actual current model + thinking level so the pickers
       // are restored to the real selection (not left empty) after connect/tab-switch.
       wsSend({ type: "get_state" });
+      // Flush a HITL answer buffered while the socket was down, so a mid-reconnect answer
+      // reaches the freshly-reconnected session's child instead of being silently dropped.
+      const buffered = pendingAnswers.get(active);
+      if (buffered) {
+        pendingAnswers.delete(active);
+        wsSend({ type: "hitl_response", id: buffered.id, ...buffered.payload });
+      }
     };
     socket.onmessage = (evt) => {
       let obj: RpcEvent;
@@ -765,11 +793,19 @@ function setup(): void {
 
   // --- HITL dialogs (ticket #07) ------------------------------------------
 
-  /** Send the answer for the given request over the ATTACHED session's WS, then clear the modal. */
+  /**
+   * Send the answer for the given request over the ATTACHED session's WS, then clear the modal.
+   * If the socket is not OPEN (mid-reconnect) the answer is buffered per-session (bounded) and
+   * flushed on reconnect, so it isn't silently dropped and the agent left blocked on its dialog.
+   */
   function answerHitl(req: HitlRequest, payload: Record<string, unknown>): void {
-    wsSend({ type: "hitl_response", id: req.id, ...payload });
     pendingModals.delete(active);
     document.querySelector(".hitl-overlay")?.remove();
+    if (ws?.readyState === WebSocket.OPEN) {
+      wsSend({ type: "hitl_response", id: req.id, ...payload });
+    } else {
+      pendingAnswers.set(active, { id: req.id, payload });
+    }
   }
 
   /** Transient, non-blocking notice for a notify request (auto-dismisses). */
