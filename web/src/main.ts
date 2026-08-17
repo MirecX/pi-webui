@@ -301,6 +301,89 @@ function setup(): void {
   let currentModel: ModelInfo | null = null;
   let currentThinkingLevel: string | null = null;
 
+  // --- session panel: compaction / retry / state / stats / structure / export (ticket #08) --
+  const compactBtn = document.querySelector<HTMLButtonElement>("#compact")!;
+  const autoCompactionChk = document.querySelector<HTMLInputElement>("#auto-compaction")!;
+  const autoRetryChk = document.querySelector<HTMLInputElement>("#auto-retry")!;
+  const exportBtn = document.querySelector<HTMLButtonElement>("#export")!;
+  const refreshPanelBtn = document.querySelector<HTMLButtonElement>("#refresh-panel")!;
+  const sessionPanel = document.querySelector<HTMLElement>("#session-panel")!;
+  const sessionStateEl = document.querySelector<HTMLElement>("#session-state")!;
+  const sessionStatsEl = document.querySelector<HTMLElement>("#session-stats")!;
+  const sessionEntriesEl = document.querySelector<HTMLUListElement>("#session-entries")!;
+  const sessionExportEl = document.querySelector<HTMLElement>("#session-export")!;
+  const sessionStructure = document.querySelector<HTMLDetailsElement>("#session-structure")!;
+  let lastExportPath: string | null = null;
+
+  const kv = (k: string, v: unknown, suffix = ""): string =>
+    `${k}: ${String(v ?? "—")}${suffix}`;
+
+  function renderState(d?: unknown): void {
+    const s = (d ?? {}) as {
+      model?: { id?: string; name?: string } | null;
+      thinkingLevel?: string | null;
+      isStreaming?: boolean;
+      isCompacting?: boolean;
+      autoCompactionEnabled?: boolean;
+      messageCount?: number;
+      sessionName?: string | null;
+    };
+    const lines = [
+      kv("model", s.model?.name || s.model?.id || "—"),
+      kv("thinking", s.thinkingLevel),
+      kv("streaming", s.isStreaming),
+      kv("compacting", s.isCompacting),
+      kv("messages", s.messageCount),
+    ];
+    sessionStateEl.textContent = lines.join(" · ");
+    // reflect the authoritative auto-compaction flag from pi's state
+    if (typeof s.autoCompactionEnabled === "boolean") autoCompactionChk.checked = s.autoCompactionEnabled;
+  }
+
+  function renderStats(d?: unknown): void {
+    const s = (d ?? {}) as {
+      totalMessages?: number;
+      tokens?: { total?: number; input?: number; output?: number };
+      cost?: number;
+      contextUsage?: { percent?: number | null; tokens?: number | null; contextWindow?: number };
+    };
+    const ctx = s.contextUsage;
+    const lines = [
+      kv("messages", s.totalMessages),
+      kv("total tokens", s.tokens?.total),
+      kv("cost", s.cost, "$"),
+      kv("context", ctx?.percent != null ? `${ctx.percent}%` : "—"),
+    ];
+    sessionStatsEl.textContent = lines.join(" · ");
+  }
+
+  function renderEntries(d?: unknown): void {
+    sessionEntriesEl.textContent = "";
+    const entries = ((d ?? {}) as { entries?: Array<{ type?: string; id?: string; message?: { role?: string } | null }> }).entries ?? [];
+    if (!entries.length) {
+      sessionEntriesEl.append(el("li", "(no entries yet)"));
+      return;
+    }
+    for (const e of entries) {
+      const role = (e as { message?: { role?: string } | null }).message?.role ?? "";
+      const label = `${e.type ?? "?"}${role ? ` [${role}]` : ""} ${e.id ?? ""}`;
+      sessionEntriesEl.append(el("li", label.trim()));
+    }
+  }
+
+  function renderExport(): void {
+    sessionExportEl.textContent = "";
+    if (!lastExportPath) {
+      sessionExportEl.append(el("span", "No export yet."));
+      return;
+    }
+    sessionExportEl.append(el("span", `Saved: ${lastExportPath}`));
+    const link = el("a", "Download transcript") as HTMLAnchorElement;
+    link.href = `/api/sessions/${encodeURIComponent(active)}/export`;
+    link.title = "Download the exported HTML transcript";
+    sessionExportEl.append(" ", link);
+  }
+
   // --- agent state (running/queued/idle), driven by relayed RPC events ---------
   const agentStateEl = document.querySelector<HTMLElement>("#agent-state")!;
   let agentRunning = false;
@@ -407,12 +490,26 @@ function setup(): void {
     deleteBtn.disabled = !active;
     forkBtn.disabled = !active;
     cloneBtn.disabled = !active;
+    compactBtn.disabled = !active;
+    exportBtn.disabled = !active;
+    autoCompactionChk.disabled = !active;
+    autoRetryChk.disabled = !active;
+    refreshPanelBtn.disabled = !active;
+    sessionPanel.classList.toggle("hidden", !active);
+    if (!active) {
+      sessionStateEl.textContent = "";
+      sessionStatsEl.textContent = "";
+      sessionEntriesEl.textContent = "";
+      sessionExportEl.textContent = "";
+    }
   }
 
   function selectSession(name: string): void {
     if (name === active) return;
     active = name;
     if (!sessions.has(name)) sessions.set(name, { name, status: "running" });
+    lastExportPath = null; // the export link is per-session; never leak across tabs
+    sessionExportEl.textContent = "";
     renderSessions();
     connect();
     renderHitlModal(); // show this session's own pending modal (or none)
@@ -525,7 +622,42 @@ function setup(): void {
         void refreshSessions().then(() => renderSessions());
         break;
       }
+      case "state": {
+        renderState(r.data);
+        break;
+      }
+      case "stats": {
+        renderStats(r.data);
+        break;
+      }
+      case "structure": {
+        renderEntries(r.data);
+        break;
+      }
+      case "export_html": {
+        const d = r.data as { path?: string } | undefined;
+        if (d?.path) {
+          lastExportPath = d.path;
+          renderExport();
+        }
+        break;
+      }
+      case "compact":
+      case "set_auto_compaction":
+      case "set_auto_retry": {
+        // confirmation acks; refresh state/stats to reflect the applied change
+        refreshPanel();
+        break;
+      }
     }
+  }
+
+  /** Re-fetch state/stats/structure for the active session's panel. */
+  function refreshPanel(): void {
+    if (!active) return;
+    wsSend({ type: "state" });
+    wsSend({ type: "stats" });
+    wsSend({ type: "structure" });
   }
 
   function handleFrame(obj: RpcEvent): void {
@@ -633,6 +765,8 @@ function setup(): void {
       // Fetch the attached session's actual current model + thinking level so the pickers
       // are restored to the real selection (not left empty) after connect/tab-switch.
       wsSend({ type: "get_state" });
+      // Populate the session panel (state/stats/structure) for this session (ticket #08).
+      refreshPanel();
       // Flush a HITL answer buffered while the socket was down, so a mid-reconnect answer
       // reaches the freshly-reconnected session's child instead of being silently dropped.
       const buffered = pendingAnswers.get(active);
@@ -790,6 +924,29 @@ function setup(): void {
     if (!active) return;
     wsSend({ type: "clone" });
   });
+
+  // --- compaction / auto-retry / export / panel refresh (ticket #08) -------
+  compactBtn.addEventListener("click", () => {
+    if (!active) return;
+    wsSend({ type: "compact" });
+  });
+
+  autoCompactionChk.addEventListener("change", () => {
+    if (!active) return;
+    wsSend({ type: "set_auto_compaction", enabled: autoCompactionChk.checked });
+  });
+
+  autoRetryChk.addEventListener("change", () => {
+    if (!active) return;
+    wsSend({ type: "set_auto_retry", enabled: autoRetryChk.checked });
+  });
+
+  exportBtn.addEventListener("click", () => {
+    if (!active) return;
+    wsSend({ type: "export_html" });
+  });
+
+  refreshPanelBtn.addEventListener("click", refreshPanel);
 
   // --- HITL dialogs (ticket #07) ------------------------------------------
 

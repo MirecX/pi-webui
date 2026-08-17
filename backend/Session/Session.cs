@@ -140,6 +140,32 @@ public sealed class Session : IAsyncDisposable
     public Task<RpcResponse?> SetThinkingLevelAsync(string level, CancellationToken ct = default)
         => SendCommand(() => new SetThinkingLevelCommand(level), "set_thinking_level", ct);
 
+    // --- Compaction / retry / state / export (ticket #08) --- per rpc.md ---
+
+    /// <summary>Manually compact this session's conversation context (rpc.md <c>compact</c>).</summary>
+    public Task<RpcResponse?> CompactAsync(CancellationToken ct = default)
+        => SendCommand(() => new CompactCommand(), "compact", ct);
+
+    /// <summary>Toggle automatic compaction (rpc.md <c>set_auto_compaction</c>, param <c>enabled</c>).</summary>
+    public Task<RpcResponse?> SetAutoCompactionAsync(bool enabled, CancellationToken ct = default)
+        => SendCommand(() => new SetAutoCompactionCommand(enabled), "set_auto_compaction", ct);
+
+    /// <summary>Toggle automatic retry on transient errors (rpc.md <c>set_auto_retry</c>, param <c>enabled</c>).</summary>
+    public Task<RpcResponse?> SetAutoRetryAsync(bool enabled, CancellationToken ct = default)
+        => SendCommand(() => new SetAutoRetryCommand(enabled), "set_auto_retry", ct);
+
+    /// <summary>Fetch token/cost/context usage stats (rpc.md <c>get_session_stats</c>).</summary>
+    public Task<RpcResponse?> GetSessionStatsAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetSessionStatsCommand(), "get_session_stats", ct);
+
+    /// <summary>Export this session to an HTML transcript (rpc.md <c>export_html</c>; data.path = generated file).</summary>
+    public Task<RpcResponse?> ExportHtmlAsync(string? outputPath = null, CancellationToken ct = default)
+        => SendCommand(() => new ExportHtmlCommand(outputPath), "export_html", ct);
+
+    /// <summary>List this session's entries for the structure panel (rpc.md <c>get_entries</c>).</summary>
+    public Task<RpcResponse?> GetEntriesAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetEntriesCommand(), "get_entries", ct);
+
     /// <summary>
     /// Send a HITL dialog answer back to this session's child as an
     /// <c>extension_ui_response</c> (ticket #07, rpc.md). Fire-and-forget: pi sends no

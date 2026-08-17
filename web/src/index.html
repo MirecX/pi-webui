@@ -17,6 +17,10 @@
       <span id="active-actions" class="active-actions">
         <button id="fork" type="button" title="Fork this session from a previous message">Fork</button>
         <button id="clone" type="button" title="Clone this session into a new branch">Clone</button>
+        <button id="compact" type="button" title="Manually compact this session's context">Compact</button>
+        <label class="toggle" title="Automatically compact when context is nearly full">Auto-compact <input type="checkbox" id="auto-compaction" /></label>
+        <label class="toggle" title="Automatically retry on transient errors (rate limit, 5xx)">Auto-retry <input type="checkbox" id="auto-retry" /></label>
+        <button id="export" type="button" title="Export this session's transcript as an HTML file">Export</button>
         <button id="abort" type="button" title="Abort the in-flight turn">Abort</button>
         <button id="recycle" type="button" title="Stop this session's agent (keeps history)">Recycle</button>
         <button id="delete" type="button" title="Delete this session permanently">Delete</button>
@@ -32,6 +36,21 @@
         <ul id="session-list" class="session-list"></ul>
       </aside>
       <main>
+        <section id="session-panel" class="session-panel hidden" aria-label="Session details">
+          <div class="session-panel-head">
+            <span class="session-panel-title">Session</span>
+            <button id="refresh-panel" type="button" title="Refresh state, stats and structure">Refresh</button>
+          </div>
+          <div class="session-panel-grid">
+            <div class="session-block"><div class="block-label">State</div><div id="session-state" class="mono"></div></div>
+            <div class="session-block"><div class="block-label">Stats</div><div id="session-stats" class="mono"></div></div>
+            <details id="session-structure" class="session-block">
+              <summary class="block-label">Structure (entries)</summary>
+              <ul id="session-entries" class="session-entries mono"></ul>
+            </details>
+            <div class="session-block"><div class="block-label">Export</div><div id="session-export" class="mono"></div></div>
+          </div>
+        </section>
         <div id="transcript" class="transcript" aria-live="polite"></div>
         <div id="turn-controls" class="turn-controls">
           <span id="agent-state" class="agent-state idle" title="Agent state">idle</span>

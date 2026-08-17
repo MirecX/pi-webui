@@ -58,6 +58,14 @@ public sealed class SessionManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, string> _persistedTitles =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Most recent exported HTML transcript path per session (name -> absolute path) (ticket #08).
+    /// Populated when <c>export_html</c> succeeds so the browser can download the generated file
+    /// via the token-gated <c>GET /api/sessions/{name}/export</c> endpoint.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _exports =
+        new(StringComparer.Ordinal);
+
     private readonly string _titlesPath;
 
     public SessionManager(Func<IPiRpcClient> clientFactory, string? sessionsDir = null)
@@ -258,7 +266,19 @@ public sealed class SessionManager : IAsyncDisposable
             return;
         await s.RecycleAsync().ConfigureAwait(false);
         TryDeleteHistory(s.HistoryFilePath);
+        _exports.TryRemove(name, out _);
     }
+
+    /// <summary>Record the most recent exported transcript path for a session (ticket #08).</summary>
+    public void RegisterExport(string name, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) _exports.TryRemove(name, out _);
+        else _exports[name] = path;
+    }
+
+    /// <summary>The most recent exported transcript path for a session, or null when none yet.</summary>
+    public string? GetExportPath(string name) =>
+        _exports.TryGetValue(name, out var p) ? p : null;
 
     public async ValueTask DisposeAsync()
     {

@@ -102,6 +102,25 @@ app.MapMethods("/api/sessions/{name}/clone", new[] { HttpMethods.Post }, async (
     }
 });
 
+// GET /api/sessions/{name}/export — download the most recently exported HTML transcript
+// for the named session (ticket #08). The file path was registered when export_html ran;
+// the token middleware gates this like every other HTTP route. Returns 404 until an export
+// exists for the session. The exported file lives on the box (owned by the pi child).
+app.MapGet("/api/sessions/{name}/export", (string name) =>
+{
+    var path = sessions.GetExportPath(name);
+    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        return Results.NotFound(new { error = "no exported transcript available for this session" });
+    try
+    {
+        return Results.File(path, "text/html", fileDownloadName: $"{name}-transcript.html");
+    }
+    catch
+    {
+        return Results.BadRequest(new { error = "exported transcript could not be read" });
+    }
+});
+
 static string? ExtractDataString(PiWebui.Rpc.RpcResponse? resp, string prop)
 {
     if (resp is null || !resp.Success || resp.Data is not { } d) return null;

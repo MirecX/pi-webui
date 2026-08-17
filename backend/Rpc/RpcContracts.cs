@@ -175,6 +175,56 @@ public sealed record GetAvailableThinkingLevelsCommand : RpcCommand
 }
 
 // ---------------------------------------------------------------------------
+// Compaction, retry, state, export (ticket #08) — wire format per rpc.md
+// ---------------------------------------------------------------------------
+
+/// <summary>Manually compact conversation context to reduce token usage (rpc.md <c>compact</c>).</summary>
+public sealed record CompactCommand : RpcCommand
+{
+    public override string Type => "compact";
+}
+
+/// <summary>Enable/disable automatic compaction when context is nearly full (rpc.md <c>set_auto_compaction</c>, param <c>enabled</c>).</summary>
+public sealed record SetAutoCompactionCommand(bool Enabled) : RpcCommand
+{
+    public override string Type => "set_auto_compaction";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteBoolean("enabled", Enabled);
+}
+
+/// <summary>Enable/disable automatic retry on transient errors (rpc.md <c>set_auto_retry</c>, param <c>enabled</c>).</summary>
+public sealed record SetAutoRetryCommand(bool Enabled) : RpcCommand
+{
+    public override string Type => "set_auto_retry";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteBoolean("enabled", Enabled);
+}
+
+/// <summary>Get token/cost/context-window usage (rpc.md <c>get_session_stats</c>).</summary>
+public sealed record GetSessionStatsCommand : RpcCommand
+{
+    public override string Type => "get_session_stats";
+}
+
+/// <summary>Export the session to an HTML transcript (rpc.md <c>export_html</c>, param <c>outputPath</c>; data.path = generated file).</summary>
+public sealed record ExportHtmlCommand(string? OutputPath = null) : RpcCommand
+{
+    public override string Type => "export_html";
+    protected override void WriteExtra(Utf8JsonWriter w)
+    {
+        if (OutputPath is not null) w.WriteString("outputPath", OutputPath);
+    }
+}
+
+/// <summary>Get all session entries for the structure panel (rpc.md <c>get_entries</c>, optional cursor <c>since</c>).</summary>
+public sealed record GetEntriesCommand(string? Since = null) : RpcCommand
+{
+    public override string Type => "get_entries";
+    protected override void WriteExtra(Utf8JsonWriter w)
+    {
+        if (Since is not null) w.WriteString("since", Since);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Response + events
 // ---------------------------------------------------------------------------
 

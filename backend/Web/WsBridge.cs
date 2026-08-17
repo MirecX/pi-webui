@@ -185,6 +185,45 @@ public sealed class WsBridge
                 }
                 break;
 
+            // --- compaction / retry / state / export (ticket #08) ---------------
+            // All scoped to the ATTACHED session's child; results relayed back to the
+            // browser as a `result` frame carrying the RPC response `data` (compaction
+            // summary, auto-toggle acks, stats object, exported path, state, structure).
+            case "compact":
+                await DispatchModelCommandAsync("compact", s => s.CompactAsync()).ConfigureAwait(false);
+                break;
+            case "set_auto_compaction":
+                await DispatchModelCommandAsync("set_auto_compaction",
+                    s => s.SetAutoCompactionAsync(root.TryGetProperty("enabled", out var ac) && ac.ValueKind == JsonValueKind.True))
+                    .ConfigureAwait(false);
+                break;
+            case "set_auto_retry":
+                await DispatchModelCommandAsync("set_auto_retry",
+                    s => s.SetAutoRetryAsync(root.TryGetProperty("enabled", out var ar) && ar.ValueKind == JsonValueKind.True))
+                    .ConfigureAwait(false);
+                break;
+            case "stats":
+                await DispatchModelCommandAsync("stats", s => s.GetSessionStatsAsync()).ConfigureAwait(false);
+                break;
+            case "structure":
+                // Session structure (rpc.md get_entries) for the session panel. Reused
+                // get_state (below) for state; entries make the structure visible.
+                await DispatchModelCommandAsync("structure", s => s.GetEntriesAsync()).ConfigureAwait(false);
+                break;
+            case "state":
+                // Reuse get_state (already wired above for model/thinking restore); this is
+                // the same command surfaced as a distinct frame for the session panel.
+                await DispatchModelCommandAsync("state", s => s.GetStateAsync()).ConfigureAwait(false);
+                break;
+            case "export_html":
+                {   // route + register the generated path so the browser can download it
+                    string? outputPath = null;
+                    if (root.TryGetProperty("outputPath", out var opProp) && opProp.ValueKind == JsonValueKind.String)
+                        outputPath = opProp.GetString();
+                    await HandleExportAsync(outputPath).ConfigureAwait(false);
+                }
+                break;
+
             // --- session browser: fork / clone / get_fork_messages (ticket #06) ----
             // All scoped to the ATTACHED session's child; results relayed as `result` frames
             // (fork returns the forking message text; clone/get_fork_messages return data).
@@ -491,6 +530,23 @@ public sealed class WsBridge
     /// </summary>
     private Task DispatchModelCommandAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
         => DispatchAsync(action, send, (a, resp) => SendResultAsync(a, resp?.DataJson));
+
+    /// <summary>
+    /// Export the attached session's transcript as an HTML file (rpc.md <c>export_html</c>;
+    /// data.path = generated file). On success the generated path is registered with the
+    /// manager so the token-gated <c>GET /api/sessions/{name}/export</c> endpoint can serve
+    /// it as a download, and the result frame (carrying the path) is relayed to the browser.
+    /// </summary>
+    private Task HandleExportAsync(string? outputPath)
+        => DispatchAsync("export_html",
+            s => s.ExportHtmlAsync(outputPath),
+            (action, resp) =>
+            {
+                if (resp?.Data is { } d
+                    && d.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String)
+                    _sessions.RegisterExport(_sessionName, p.GetString()!);
+                return SendResultAsync(action, resp?.DataJson);
+            });
 
 
     /// <summary>
