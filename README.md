@@ -17,7 +17,7 @@ See **[DESIGN.md](DESIGN.md)** for the full architecture and decision record.
 **One-liner (in a yolobox container or any box with pi + .NET SDK + Node):**
 
 ```bash
-curl -fsSL https://pi.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/MirecX/pi-webui/master/install.sh | sh
 ```
 
 [install.sh](install.sh) clones the repo, builds frontend + backend, writes
