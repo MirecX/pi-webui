@@ -69,9 +69,13 @@ public sealed class Session : IAsyncDisposable
 
     private void OnEvent(RpcEvent ev) => _events.Publish(ev);
 
-    /// <summary>Send a prompt to this session's own child and await its acceptance response.</summary>
-    public Task<RpcResponse?> PromptAsync(string message, CancellationToken ct = default)
-        => SendCommand(() => new PromptCommand(message), "prompt", ct);
+    /// <summary>
+    /// Send a prompt to this session's own child and await its acceptance response.
+    /// When <paramref name="streamingBehavior"/> is set (e.g. "steer") the prompt is
+    /// queued for delivery to an already-running agent instead of being rejected.
+    /// </summary>
+    public Task<RpcResponse?> PromptAsync(string message, string? streamingBehavior = null, CancellationToken ct = default)
+        => SendCommand(() => new PromptCommand(message, streamingBehavior), "prompt", ct);
 
     /// <summary>Queue a steering message (delivered before the agent's next LLM call).</summary>
     public Task<RpcResponse?> SteerAsync(string message, CancellationToken ct = default)
@@ -84,14 +88,6 @@ public sealed class Session : IAsyncDisposable
     /// <summary>Abort the currently in-flight turn.</summary>
     public Task<RpcResponse?> AbortAsync(CancellationToken ct = default)
         => SendCommand(() => new AbortCommand(), "abort", ct);
-
-    /// <summary>Set how queued steering messages are delivered ("all" | "one-at-a-time").</summary>
-    public Task<RpcResponse?> SetSteeringModeAsync(string mode, CancellationToken ct = default)
-        => SendCommand(() => new SetSteeringModeCommand(mode), "set_steering_mode", ct);
-
-    /// <summary>Set how queued follow-up messages are delivered ("all" | "one-at-a-time").</summary>
-    public Task<RpcResponse?> SetFollowUpModeAsync(string mode, CancellationToken ct = default)
-        => SendCommand(() => new SetFollowUpModeCommand(mode), "set_follow_up_mode", ct);
 
     /// <summary>
     /// Send a single command to this session's own child and await its correlated

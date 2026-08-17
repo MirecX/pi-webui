@@ -93,6 +93,122 @@ public class WsBridgeTests
     }
 
     [Fact]
+    public async Task Prompt_while_agent_idle_carries_no_streaming_behavior()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        // agent is idle (never started): the composer prompt needs no streamingBehavior
+        await bridge.HandleMessageAsync(PromptJson);
+
+        var cmd = Assert.Single(fake.Sent.OfType<PromptCommand>());
+        Assert.Equal("hello from browser", cmd.Message);
+        Assert.Null(cmd.StreamingBehavior);
+    }
+
+    [Fact]
+    public async Task Prompt_while_agent_running_defaults_to_steer_streaming_behavior()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        // agent begins streaming -> bridge observes the running state
+        fake.Emit(new AgentStartEvent { Raw = AgentStartRaw });
+        await TestWait.UntilAsync(() => bridge.AgentRunning);
+
+        // a composer prompt (no explicit streamingBehavior) must queue as a steer
+        await bridge.HandleMessageAsync("{\"type\":\"prompt\",\"message\":\"continue\"}");
+
+        var cmd = Assert.Single(fake.Sent.OfType<PromptCommand>());
+        Assert.Equal("continue", cmd.Message);
+        Assert.Equal("steer", cmd.StreamingBehavior);
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected */ }
+    }
+
+    [Fact]
+    public async Task Prompt_frame_explicit_streaming_behavior_passes_through()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync(
+            "{\"type\":\"prompt\",\"message\":\"x\",\"streamingBehavior\":\"followUp\"}");
+
+        var cmd = Assert.Single(fake.Sent.OfType<PromptCommand>());
+        Assert.Equal("followUp", cmd.StreamingBehavior);
+    }
+
+    [Fact]
+    public async Task Steer_while_agent_running_forwards_command()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        fake.Emit(new AgentStartEvent { Raw = AgentStartRaw });
+        await TestWait.UntilAsync(() => bridge.AgentRunning);
+
+        await bridge.HandleMessageAsync("{\"type\":\"steer\",\"message\":\"redirect\"}");
+
+        var cmd = Assert.Single(fake.Sent.OfType<SteerCommand>());
+        Assert.Equal("redirect", cmd.Message);
+        Assert.Null(ws.Sent.FirstOrDefault(s => s.Contains("\"error\""))); // no error frame
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected */ }
+    }
+
+    [Fact]
+    public async Task Steer_while_agent_settled_idle_reports_error_instead_of_sending()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        // the agent ran and then settled -> we KNOW it is idle
+        fake.Emit(new AgentStartEvent { Raw = AgentStartRaw });
+        fake.Emit(new AgentSettledEvent { Raw = "{\"type\":\"agent_settled\"}" });
+        await TestWait.UntilAsync(() => bridge.HasSettled && !bridge.AgentRunning);
+
+        await bridge.HandleMessageAsync("{\"type\":\"steer\",\"message\":\"too late\"}");
+
+        // clear error surfaced (alongside the already-relayed agent_start/agent_settled), and
+        // nothing was forwarded to the child
+        var err = Assert.Single(ws.Sent.Where(s => s.Contains("\"error\"")));
+        Assert.Contains("not running", err);
+        Assert.Empty(fake.Sent.OfType<SteerCommand>());
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected */ }
+    }
+
+    [Fact]
     public async Task Prompt_message_from_browser_forwards_to_attached_sessions_agent()
     {
         using var h = new Harness();

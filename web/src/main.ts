@@ -241,18 +241,20 @@ function setup(): void {
   const agentStateEl = document.querySelector<HTMLElement>("#agent-state")!;
   let agentRunning = false;
   let aborting = false;
+  let stopped = false; // distinct "stopped" state set on abort, cleared on agent settle
   let queuedSteer = 0;
   let queuedFollow = 0;
 
   function renderAgentState(): void {
     const parts: string[] = [];
-    if (aborting) parts.push("stopping");
+    if (stopped) parts.push("stopped");
+    else if (aborting) parts.push("stopping");
     else if (agentRunning) parts.push("running");
     else parts.push("idle");
     if (queuedSteer > 0) parts.push(`${queuedSteer} steer`);
     if (queuedFollow > 0) parts.push(`${queuedFollow} follow-up`);
     agentStateEl.textContent = parts.join(" · ");
-    agentStateEl.className = `agent-state ${aborting ? "stopping" : agentRunning ? "running" : "idle"}`;
+    agentStateEl.className = `agent-state ${stopped ? "stopped" : aborting ? "stopping" : agentRunning ? "running" : "idle"}`;
   }
 
   // --- WebSocket ----------------------------------------------------------
@@ -364,10 +366,12 @@ function setup(): void {
     if (obj.type === "agent_start") {
       agentRunning = true;
       aborting = false;
+      stopped = false;
       renderAgentState();
     } else if (obj.type === "agent_settled") {
       agentRunning = false;
       aborting = false;
+      stopped = false;
       renderAgentState();
     } else if (obj.type === "queue_update") {
       const q = obj as { steering?: unknown[]; followUp?: unknown[] };
@@ -384,6 +388,7 @@ function setup(): void {
     status.set("connecting…");
     agentRunning = false;
     aborting = false;
+    stopped = false;
     queuedSteer = 0;
     queuedFollow = 0;
     renderAgentState();
@@ -422,7 +427,12 @@ function setup(): void {
   const submit = (): void => {
     const text = input.value.trim();
     if (!text) return;
-    wsSend({ type: "prompt", message: text });
+    // rpc.md: a prompt while the agent is streaming REQUIRES a streamingBehavior or it is
+    // rejected. When we believe the agent is running, queue it as a steer so it is
+    // delivered before the agent's next LLM call; idle prompts need no streamingBehavior.
+    const payload: Record<string, unknown> = { type: "prompt", message: text };
+    if (agentRunning) payload.streamingBehavior = "steer";
+    wsSend(payload);
     input.value = "";
   };
   sendBox.addEventListener("submit", (e) => {
@@ -447,6 +457,7 @@ function setup(): void {
   abortBtn.addEventListener("click", () => {
     if (!active) return;
     aborting = true;
+    stopped = true; // reflect "stopped" after an abort is issued (distinct from idle)
     renderAgentState();
     wsSend({ type: "abort" });
   });

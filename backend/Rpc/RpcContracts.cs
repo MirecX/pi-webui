@@ -66,20 +66,6 @@ public sealed record FollowUpCommand(string Message) : RpcCommand
     protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("message", Message);
 }
 
-/// <summary>Control how queued steering messages are delivered ("all" | "one-at-a-time").</summary>
-public sealed record SetSteeringModeCommand(string Mode) : RpcCommand
-{
-    public override string Type => "set_steering_mode";
-    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("mode", Mode);
-}
-
-/// <summary>Control how queued follow-up messages are delivered ("all" | "one-at-a-time").</summary>
-public sealed record SetFollowUpModeCommand(string Mode) : RpcCommand
-{
-    public override string Type => "set_follow_up_mode";
-    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("mode", Mode);
-}
-
 public sealed record GetStateCommand : RpcCommand
 {
     public override string Type => "get_state";

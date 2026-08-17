@@ -328,4 +328,5 @@ pre {
 }
 .agent-state.running { color: var(--accent); border-color: var(--accent); }
 .agent-state.stopping { color: var(--err); border-color: var(--err); }
+.agent-state.stopped { color: var(--err); border-color: var(--err); opacity: 0.75; }
 .agent-state.idle { color: var(--bash); border-color: var(--bash); }

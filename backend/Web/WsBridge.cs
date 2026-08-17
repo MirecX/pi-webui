@@ -27,6 +27,19 @@ public sealed class WsBridge
     private readonly object _subLock = new();
     private Channel<RpcEvent>? _sub;
 
+    /// <summary>
+    /// Live agent state observed from the attached session's event stream. Drives the
+    /// inbound turn-control guards (see <see cref="TrackAgentState"/>).
+    /// </summary>
+    private bool _agentRunning;
+    private bool _hasSettled;
+
+    /// <summary>True once the attached agent has started and not yet settled.</summary>
+    internal bool AgentRunning => _agentRunning;
+
+    /// <summary>True after the attached agent has emitted at least one terminal settle.</summary>
+    internal bool HasSettled => _hasSettled;
+
     public WsBridge(SessionManager sessions, string sessionName, IWsClient client)
     {
         _sessions = sessions;
@@ -83,7 +96,10 @@ public sealed class WsBridge
             }
 
             await foreach (var ev in ch.Reader.ReadAllAsync(ct))
+            {
+                TrackAgentState(ev);
                 await _client.SendAsync(ev.Raw, ct).ConfigureAwait(false);
+            }
         }
     }
 
@@ -101,17 +117,31 @@ public sealed class WsBridge
             case "prompt":
                 // prompts are always scoped to the attached session
                 if (root.TryGetProperty("message", out var msgProp) && msgProp.GetString() is { } message)
-                    await HandlePromptAsync(message).ConfigureAwait(false);
+                {
+                    string? frameSb = null;
+                    if (root.TryGetProperty("streamingBehavior", out var sbProp) && sbProp.ValueKind == JsonValueKind.String)
+                        frameSb = sbProp.GetString();
+                    await HandlePromptAsync(message, frameSb).ConfigureAwait(false);
+                }
                 break;
 
             case "steer":
-                if (root.TryGetProperty("message", out var steerProp) && steerProp.GetString() is { } steerMsg)
-                    await DispatchTurnAsync("steer", s => s.SteerAsync(steerMsg)).ConfigureAwait(false);
-                break;
-
             case "follow_up":
-                if (root.TryGetProperty("message", out var fuProp) && fuProp.GetString() is { } fuMsg)
-                    await DispatchTurnAsync("follow_up", s => s.FollowUpAsync(fuMsg)).ConfigureAwait(false);
+                if (root.TryGetProperty("message", out var tpProp) && tpProp.GetString() is { } tMsg)
+                {
+                    // rpc.md: steer is valid only while the agent is running. Rather than
+                    // forward a steer pi would silently reject, surface a clear error when
+                    // we know the attached agent is idle. follow_up is valid regardless.
+                    if (type == "steer" && !_agentRunning && _hasSettled)
+                    {
+                        await SendErrorAsync("agent is not running; steer is only valid while the agent is running").ConfigureAwait(false);
+                        break;
+                    }
+                    var send = type == "steer"
+                        ? (Func<PiWebui.Session.Session, Task<RpcResponse?>>)(s => s.SteerAsync(tMsg))
+                        : s => s.FollowUpAsync(tMsg);
+                    await DispatchTurnAsync(type, send).ConfigureAwait(false);
+                }
                 break;
 
             case "abort":
@@ -131,8 +161,36 @@ public sealed class WsBridge
         }
     }
 
-    private async Task HandlePromptAsync(string message)
-        => await DispatchTurnAsync("prompt", s => s.PromptAsync(message)).ConfigureAwait(false);
+    private async Task HandlePromptAsync(string message, string? frameStreamingBehavior = null)
+    {
+        // rpc.md: a prompt sent while the agent is streaming REQUIRES a streamingBehavior
+        // or it is rejected. If the frame didn't specify one but the attached agent is
+        // running, default to "steer" so the composer's question queues for delivery before
+        // the next LLM call. When the agent is idle no streamingBehavior is needed.
+        var streamingBehavior = frameStreamingBehavior ?? (_agentRunning ? "steer" : null);
+        await DispatchTurnAsync("prompt", s => s.PromptAsync(message, streamingBehavior)).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Track the attached agent's live running state from relayed events so inbound
+    /// turn-controls can guard against invalid states (e.g. steering while idle).
+    /// </summary>
+    private void TrackAgentState(RpcEvent ev)
+    {
+        switch (ev.Type)
+        {
+            case "agent_start":
+                _agentRunning = true;
+                _hasSettled = false;
+                break;
+            case "agent_settled":
+                _agentRunning = false;
+                _hasSettled = true;
+                break;
+            // agent_end: a low-level run finished but the agent may still retry, compact,
+            // or continue with queued follow-ups, so it stays "running" until settled.
+        }
+    }
 
     /// <summary>
     /// Run one turn-control command (prompt/steer/follow_up/abort) against the attached

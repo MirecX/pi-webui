@@ -167,10 +167,6 @@ public class SessionManagerTests
 
         var abort = new AbortCommand().ToJson();
         Assert.Contains("\"type\":\"abort\"", abort);
-
-        var mode = new SetSteeringModeCommand("one-at-a-time").ToJson();
-        Assert.Contains("\"type\":\"set_steering_mode\"", mode);
-        Assert.Contains("\"mode\":\"one-at-a-time\"", mode);
     }
 
     [Fact]
@@ -183,14 +179,12 @@ public class SessionManagerTests
         await session.SteerAsync("steer me");
         await session.FollowUpAsync("follow me");
         await session.AbortAsync();
-        await session.SetFollowUpModeAsync("all");
 
         var steer = Assert.Single(client.Sent.OfType<SteerCommand>());
         Assert.Equal("steer me", steer.Message);
         var fu = Assert.Single(client.Sent.OfType<FollowUpCommand>());
         Assert.Equal("follow me", fu.Message);
         Assert.Single(client.Sent.OfType<AbortCommand>());
-        Assert.Equal("all", Assert.Single(client.Sent.OfType<SetFollowUpModeCommand>()).Mode);
     }
 
     [Fact]
