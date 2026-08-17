@@ -153,6 +153,82 @@ public class SessionManagerTests
     }
 
     [Fact]
+    public async Task Steer_follow_up_abort_serialise_as_correct_json_lines()
+    {
+        var steer = new SteerCommand("stop and pivot");
+        var steerJson = steer.ToJson();
+        Assert.Contains("\"type\":\"steer\"", steerJson);
+        Assert.Contains("\"message\":\"stop and pivot\"", steerJson);
+
+        var fu = new FollowUpCommand("then summarize");
+        var fuJson = fu.ToJson();
+        Assert.Contains("\"type\":\"follow_up\"", fuJson);
+        Assert.Contains("\"message\":\"then summarize\"", fuJson);
+
+        var abort = new AbortCommand().ToJson();
+        Assert.Contains("\"type\":\"abort\"", abort);
+
+        var mode = new SetSteeringModeCommand("one-at-a-time").ToJson();
+        Assert.Contains("\"type\":\"set_steering_mode\"", mode);
+        Assert.Contains("\"mode\":\"one-at-a-time\"", mode);
+    }
+
+    [Fact]
+    public async Task Turn_control_methods_forward_to_client()
+    {
+        using var h = new Harness();
+        var session = await h.Manager.InitAsync("default");
+        var client = h.Clients[0];
+
+        await session.SteerAsync("steer me");
+        await session.FollowUpAsync("follow me");
+        await session.AbortAsync();
+        await session.SetFollowUpModeAsync("all");
+
+        var steer = Assert.Single(client.Sent.OfType<SteerCommand>());
+        Assert.Equal("steer me", steer.Message);
+        var fu = Assert.Single(client.Sent.OfType<FollowUpCommand>());
+        Assert.Equal("follow me", fu.Message);
+        Assert.Single(client.Sent.OfType<AbortCommand>());
+        Assert.Equal("all", Assert.Single(client.Sent.OfType<SetFollowUpModeCommand>()).Mode);
+    }
+
+    [Fact]
+    public async Task Turn_control_on_recycled_session_throws_not_running()
+    {
+        using var h = new Harness();
+        var session = await h.Manager.InitAsync("a");
+        await h.Manager.RecycleAsync("a");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.SteerAsync("x"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.FollowUpAsync("y"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.AbortAsync());
+    }
+
+    [Fact]
+    public async Task Turn_control_after_disposed_child_surfaces_clean_not_running_error()
+    {
+        var disposed = new FakePiRpcClient(cmd =>
+            cmd is SteerCommand
+                ? throw new ObjectDisposedException("stdin")
+                : new RpcResponse("ok", cmd.Type, true, null, null));
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-steerrace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => disposed, dir);
+            var session = await mgr.InitAsync("a");
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => session.SteerAsync("x"));
+            Assert.Contains("recycled mid-steer", ex.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Recycle_stops_child_but_preserves_session_and_history()
     {
         using var h = new Harness();

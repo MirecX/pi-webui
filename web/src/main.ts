@@ -237,6 +237,24 @@ function setup(): void {
   const sessions = new Map<string, string>(); // name -> status
   let active = "";
 
+  // --- agent state (running/queued/idle), driven by relayed RPC events ---------
+  const agentStateEl = document.querySelector<HTMLElement>("#agent-state")!;
+  let agentRunning = false;
+  let aborting = false;
+  let queuedSteer = 0;
+  let queuedFollow = 0;
+
+  function renderAgentState(): void {
+    const parts: string[] = [];
+    if (aborting) parts.push("stopping");
+    else if (agentRunning) parts.push("running");
+    else parts.push("idle");
+    if (queuedSteer > 0) parts.push(`${queuedSteer} steer`);
+    if (queuedFollow > 0) parts.push(`${queuedFollow} follow-up`);
+    agentStateEl.textContent = parts.join(" · ");
+    agentStateEl.className = `agent-state ${aborting ? "stopping" : agentRunning ? "running" : "idle"}`;
+  }
+
   // --- WebSocket ----------------------------------------------------------
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   let ws: WebSocket | null = null;
@@ -343,12 +361,32 @@ function setup(): void {
       status.set(`⚠ ${String((obj as { message?: string }).message ?? "error")}`);
       return;
     }
+    if (obj.type === "agent_start") {
+      agentRunning = true;
+      aborting = false;
+      renderAgentState();
+    } else if (obj.type === "agent_settled") {
+      agentRunning = false;
+      aborting = false;
+      renderAgentState();
+    } else if (obj.type === "queue_update") {
+      const q = obj as { steering?: unknown[]; followUp?: unknown[] };
+      queuedSteer = Array.isArray(q.steering) ? q.steering.length : 0;
+      queuedFollow = Array.isArray(q.followUp) ? q.followUp.length : 0;
+      renderAgentState();
+      return; // queue status only, not a transcript event
+    }
     transcript.handle(obj); // live RPC event
   }
 
   function connect(): void {
     transcript.clear();
     status.set("connecting…");
+    agentRunning = false;
+    aborting = false;
+    queuedSteer = 0;
+    queuedFollow = 0;
+    renderAgentState();
     if (ws) {
       const old = ws;
       old.onclose = null; // the new connection owns the close path now
@@ -396,6 +434,56 @@ function setup(): void {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
+    }
+  });
+
+  // --- abort / steer / follow-up (ticket #03) ------------------------------
+  const abortBtn = document.querySelector<HTMLButtonElement>("#abort")!;
+  const steerInput = document.querySelector<HTMLInputElement>("#steer-input")!;
+  const steerSend = document.querySelector<HTMLButtonElement>("#steer-send")!;
+  const followupInput = document.querySelector<HTMLInputElement>("#followup-input")!;
+  const followupSend = document.querySelector<HTMLButtonElement>("#followup-send")!;
+
+  abortBtn.addEventListener("click", () => {
+    if (!active) return;
+    aborting = true;
+    renderAgentState();
+    wsSend({ type: "abort" });
+  });
+
+  const submitSteer = (): void => {
+    const text = steerInput.value.trim();
+    if (!text) return;
+    wsSend({ type: "steer", message: text });
+    steerInput.value = "";
+    if (agentRunning) {
+      queuedSteer++; // optimistic feedback; authoritative queue_update corrects it
+      renderAgentState();
+    }
+  };
+  steerSend.addEventListener("click", submitSteer);
+  steerInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitSteer();
+    }
+  });
+
+  const submitFollowup = (): void => {
+    const text = followupInput.value.trim();
+    if (!text) return;
+    wsSend({ type: "follow_up", message: text });
+    followupInput.value = "";
+    if (!agentRunning) {
+      queuedFollow++; // optimistic feedback; authoritative queue_update corrects it
+      renderAgentState();
+    }
+  };
+  followupSend.addEventListener("click", submitFollowup);
+  followupInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitFollowup();
     }
   });
 

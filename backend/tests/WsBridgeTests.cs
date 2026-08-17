@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using PiWebui.Rpc;
 using PiWebui.Session;
@@ -109,6 +110,121 @@ public class WsBridgeTests
         Assert.Single(fakeB.Sent.OfType<PromptCommand>());
         Assert.Equal("hello from browser", fakeB.Sent.OfType<PromptCommand>().Single().Message);
         Assert.Empty(fakeA.Sent.OfType<PromptCommand>());
+    }
+
+    [Fact]
+    public async Task Steer_frame_from_browser_forwards_steer_command_to_attached_session_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.InitAsync("b");
+        var fakeB = h.Clients[1];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "b", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"steer\",\"message\":\"stop and do this instead\"}");
+
+        var cmd = Assert.Single(fakeB.Sent.OfType<SteerCommand>());
+        Assert.Equal("stop and do this instead", cmd.Message);
+    }
+
+    [Fact]
+    public async Task Follow_up_frame_from_browser_forwards_follow_up_command_to_attached_session_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"follow_up\",\"message\":\"after you settle, also do this\"}");
+
+        var cmd = Assert.Single(fake.Sent.OfType<FollowUpCommand>());
+        Assert.Equal("after you settle, also do this", cmd.Message);
+    }
+
+    [Fact]
+    public async Task Abort_frame_from_browser_sends_abort_to_attached_session_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"abort\"}");
+
+        Assert.Single(fake.Sent.OfType<AbortCommand>());
+    }
+
+    [Fact]
+    public async Task Steer_follow_up_abort_go_to_attached_session_only()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.InitAsync("b");
+        var fakeA = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws); // attached to a
+
+        await bridge.HandleMessageAsync("{\"type\":\"steer\",\"message\":\"redirect\"}");
+
+        Assert.Single(fakeA.Sent.OfType<SteerCommand>());
+        Assert.Empty(h.Clients[1].Sent.OfType<SteerCommand>()); // session b's child untouched
+    }
+
+    [Fact]
+    public async Task Queue_and_agent_status_events_are_relayed_to_attached_client()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        // agent starts, then a queue forms, then it settles — the browser must learn all three
+        fake.Emit(new AgentStartEvent { Raw = "{\"type\":\"agent_start\"}" });
+        fake.Emit(new QueueUpdateEvent(
+            JsonDocument.Parse("[\"stop and do this\"]").RootElement,
+            JsonDocument.Parse("[\"after that, summarize\"]").RootElement)
+        { Raw = "{\"type\":\"queue_update\",\"steering\":[\"s\"],\"followUp\":[\"f\"]}" });
+        fake.Emit(new AgentSettledEvent { Raw = "{\"type\":\"agent_settled\"}" });
+
+        await TestWait.UntilAsync(() => ws.Sent.Count >= 3);
+        Assert.Contains(ws.Sent, s => s.Contains("\"agent_start\""));
+        Assert.Contains(ws.Sent, s => s.Contains("\"queue_update\"") && s.Contains("steering") && s.Contains("followUp"));
+        Assert.Contains(ws.Sent, s => s.Contains("\"agent_settled\""));
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected on cancel */ }
+    }
+
+    [Fact]
+    public async Task Turn_control_to_not_running_session_reports_error()
+    {
+        using var h = new Harness();
+        // session exists but is recycled (not running)
+        await h.Manager.InitAsync("a");
+        await h.Manager.RecycleAsync("a");
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"steer\",\"message\":\"x\"}");
+        await bridge.HandleMessageAsync("{\"type\":\"abort\"}");
+
+        // both turn controls on a stopped session surface an error, never a crash
+        Assert.Equal(2, ws.Sent.Count);
+        Assert.All(ws.Sent, s => Assert.Contains("\"error\"", s));
+        Assert.All(ws.Sent, s => Assert.Contains("not running", s));
     }
 
     [Fact]

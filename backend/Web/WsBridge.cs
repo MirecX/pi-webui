@@ -104,6 +104,20 @@ public sealed class WsBridge
                     await HandlePromptAsync(message).ConfigureAwait(false);
                 break;
 
+            case "steer":
+                if (root.TryGetProperty("message", out var steerProp) && steerProp.GetString() is { } steerMsg)
+                    await DispatchTurnAsync("steer", s => s.SteerAsync(steerMsg)).ConfigureAwait(false);
+                break;
+
+            case "follow_up":
+                if (root.TryGetProperty("message", out var fuProp) && fuProp.GetString() is { } fuMsg)
+                    await DispatchTurnAsync("follow_up", s => s.FollowUpAsync(fuMsg)).ConfigureAwait(false);
+                break;
+
+            case "abort":
+                await DispatchTurnAsync("abort", s => s.AbortAsync()).ConfigureAwait(false);
+                break;
+
             case "init":
             case "recycle":
             case "delete":
@@ -118,6 +132,14 @@ public sealed class WsBridge
     }
 
     private async Task HandlePromptAsync(string message)
+        => await DispatchTurnAsync("prompt", s => s.PromptAsync(message)).ConfigureAwait(false);
+
+    /// <summary>
+    /// Run one turn-control command (prompt/steer/follow_up/abort) against the attached
+    /// session's child. Shared error handling keeps every turn command consistent:
+    /// genuine failures surface to the browser; expected teardown stays quiet.
+    /// </summary>
+    private async Task DispatchTurnAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
     {
         var s = _sessions.Get(_sessionName);
         if (s is null || !s.IsRunning)
@@ -128,11 +150,11 @@ public sealed class WsBridge
 
         try
         {
-            var resp = await s.PromptAsync(message).ConfigureAwait(false);
-            // A correlated, non-success response means the prompt was rejected
+            var resp = await send(s).ConfigureAwait(false);
+            // A correlated, non-success response means the command was rejected
             // server-side; surface it so a rejection isn't silent.
             if (resp is { Success: false })
-                await SendErrorAsync($"prompt rejected: {resp.Error ?? "unknown error"}").ConfigureAwait(false);
+                await SendErrorAsync($"{action} rejected: {resp.Error ?? "unknown error"}").ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -140,18 +162,18 @@ public sealed class WsBridge
         }
         catch (OperationCanceledException)
         {
-            // A pending prompt was cancelled. If the session is STILL live this is a
-            // genuine per-command failure (e.g. the child was killed mid-prompt) and the
+            // A pending command was cancelled. If the session is STILL live this is a
+            // genuine per-command failure (e.g. the child was killed mid-command) and the
             // browser must hear about it rather than have it silently dropped. If the
-            // session is no longer running the prompt was cancelled by an explicit
+            // session is no longer running the command was cancelled by an explicit
             // recycle/delete teardown, which the lifecycle event already covers.
             if (s.IsRunning)
-                await SendErrorAsync("prompt cancelled; the session stopped before it could respond").ConfigureAwait(false);
+                await SendErrorAsync($"{action} cancelled; the session stopped before it could respond").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             // Any other genuine per-command failure: surface it instead of dropping it.
-            await SendErrorAsync($"prompt failed: {ex.Message}").ConfigureAwait(false);
+            await SendErrorAsync($"{action} failed: {ex.Message}").ConfigureAwait(false);
         }
     }
 

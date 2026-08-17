@@ -11,6 +11,7 @@
       <h1>pi-webui</h1>
       <span id="active-session" class="active-session"></span>
       <span id="active-actions" class="active-actions">
+        <button id="abort" type="button" title="Abort the in-flight turn">Abort</button>
         <button id="recycle" type="button" title="Stop this session's agent (keeps history)">Recycle</button>
         <button id="delete" type="button" title="Delete this session permanently">Delete</button>
       </span>
@@ -26,6 +27,13 @@
       </aside>
       <main>
         <div id="transcript" class="transcript" aria-live="polite"></div>
+        <div id="turn-controls" class="turn-controls">
+          <span id="agent-state" class="agent-state idle" title="Agent state">idle</span>
+          <input id="steer-input" type="text" placeholder="Steer while running (delivered before the next LLM call)…" />
+          <button id="steer-send" type="button" title="Queue a steering message">Steer</button>
+          <input id="followup-input" type="text" placeholder="Follow-up when done (delivered after the agent settles)…" />
+          <button id="followup-send" type="button" title="Queue a follow-up message">Follow-up</button>
+        </div>
         <form id="composer" class="composer">
           <textarea
             id="prompt"

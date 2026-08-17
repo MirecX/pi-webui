@@ -121,4 +121,64 @@ public class PiRpcClientProcessTests
             File.Delete(scenario);
         }
     }
+
+    [Fact]
+    public async Task Steer_follow_up_abort_roundtrip_through_jsonl_pipe()
+    {
+        // The fake pi acknowledges EVERY command type generically and emits the configured
+        // byType/scenario events, so steer/follow_up/abort get a correlated success response
+        // and any emitted queue/agent events parse as typed events.
+        var scenario = Path.Combine(Path.GetTempPath(), $"fake-pi-{Guid.NewGuid():N}.json");
+        File.WriteAllText(scenario, string.Join("\n", new[]
+        {
+            // startup: a queue forms then the agent settles
+            @"{""when"":""start"",""emit"":[{""type"":""queue_update"",""steering"":[""steer me""],""followUp"":[]},{""type"":""agent_settled""}]}",
+            // steering command ack: the queue drains
+            @"{""when"":""steer"",""emit"":[{""type"":""queue_update"",""steering"":[],""followUp"":[]}]}",
+        }));
+
+        try
+        {
+            var received = new List<RpcEvent>();
+            await using var client = new PiRpcClient(new PiClientOptions
+            {
+                Executable = "node",
+                Arguments = new[] { FixturePath("fake-pi.mjs") },
+                WorkingDirectory = Path.GetDirectoryName(FixturePath("fake-pi.mjs"))!,
+                Environment = new Dictionary<string, string> { ["FAKE_PI_SCENARIO"] = scenario },
+            });
+            client.EventReceived += received.Add;
+            client.Start();
+
+            // startup queue/agent events are parsed and surfaced
+            await TestWait.UntilAsync(() => received.OfType<QueueUpdateEvent>().Any());
+            Assert.Contains(received, e => e is AgentSettledEvent);
+            var q = Assert.Single(received.OfType<QueueUpdateEvent>());
+            Assert.NotNull(q.Steering);
+            Assert.NotNull(q.FollowUp);
+
+            // each turn-control command round-trips with a correlated success response
+            var steer = await client.SendAsync(new SteerCommand("stop and pivot")).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(steer);
+            Assert.True(steer!.Success);
+            Assert.Equal("steer", steer.Command);
+
+            var fu = await client.SendAsync(new FollowUpCommand("then summarize")).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(fu);
+            Assert.True(fu!.Success);
+            Assert.Equal("follow_up", fu.Command);
+
+            var abort = await client.SendAsync(new AbortCommand()).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(abort);
+            Assert.True(abort!.Success);
+            Assert.Equal("abort", abort.Command);
+
+            // steer command also triggered the configured queue_update event
+            await TestWait.UntilAsync(() => received.OfType<QueueUpdateEvent>().Count() >= 2);
+        }
+        finally
+        {
+            File.Delete(scenario);
+        }
+    }
 }

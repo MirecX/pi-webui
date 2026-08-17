@@ -70,20 +70,48 @@ public sealed class Session : IAsyncDisposable
     private void OnEvent(RpcEvent ev) => _events.Publish(ev);
 
     /// <summary>Send a prompt to this session's own child and await its acceptance response.</summary>
-    public async Task<RpcResponse?> PromptAsync(string message, CancellationToken ct = default)
+    public Task<RpcResponse?> PromptAsync(string message, CancellationToken ct = default)
+        => SendCommand(() => new PromptCommand(message), "prompt", ct);
+
+    /// <summary>Queue a steering message (delivered before the agent's next LLM call).</summary>
+    public Task<RpcResponse?> SteerAsync(string message, CancellationToken ct = default)
+        => SendCommand(() => new SteerCommand(message), "steer", ct);
+
+    /// <summary>Queue a follow-up message (delivered after the agent settles).</summary>
+    public Task<RpcResponse?> FollowUpAsync(string message, CancellationToken ct = default)
+        => SendCommand(() => new FollowUpCommand(message), "follow_up", ct);
+
+    /// <summary>Abort the currently in-flight turn.</summary>
+    public Task<RpcResponse?> AbortAsync(CancellationToken ct = default)
+        => SendCommand(() => new AbortCommand(), "abort", ct);
+
+    /// <summary>Set how queued steering messages are delivered ("all" | "one-at-a-time").</summary>
+    public Task<RpcResponse?> SetSteeringModeAsync(string mode, CancellationToken ct = default)
+        => SendCommand(() => new SetSteeringModeCommand(mode), "set_steering_mode", ct);
+
+    /// <summary>Set how queued follow-up messages are delivered ("all" | "one-at-a-time").</summary>
+    public Task<RpcResponse?> SetFollowUpModeAsync(string mode, CancellationToken ct = default)
+        => SendCommand(() => new SetFollowUpModeCommand(mode), "set_follow_up_mode", ct);
+
+    /// <summary>
+    /// Send a single command to this session's own child and await its correlated
+    /// response. Shared by all turn-control methods so their error handling stays
+    /// identical to <c>prompt</c> (genuine errors surfaced, expected teardown quiet).
+    /// </summary>
+    private async Task<RpcResponse?> SendCommand(Func<RpcCommand> build, string action, CancellationToken ct)
     {
         var client = _client
             ?? throw new InvalidOperationException($"session '{Name}' is not running; initialize it first");
         try
         {
-            return await client.SendAsync(new PromptCommand(message), ct).ConfigureAwait(false);
+            return await client.SendAsync(build(), ct).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
-            // The child was disposed mid-write (a recycle raced this prompt). Surface it
+            // The child was disposed mid-write (a recycle raced this command). Surface it
             // as an ordinary not-running error instead of letting it tear down the WS loop.
             throw new InvalidOperationException(
-                $"session '{Name}' was recycled mid-prompt; re-initialize it to continue");
+                $"session '{Name}' was recycled mid-{action}; re-initialize it to continue");
         }
     }
 

@@ -46,6 +46,40 @@ public sealed record AbortCommand : RpcCommand
     public override string Type => "abort";
 }
 
+/// <summary>
+/// Queue a steering message while the agent is running. Delivered after the current
+/// assistant turn finishes executing its tool calls, before the next LLM call.
+/// </summary>
+public sealed record SteerCommand(string Message) : RpcCommand
+{
+    public override string Type => "steer";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("message", Message);
+}
+
+/// <summary>
+/// Queue a follow-up message to be processed after the agent finishes. Delivered only
+/// when no more tool calls or steering messages remain.
+/// </summary>
+public sealed record FollowUpCommand(string Message) : RpcCommand
+{
+    public override string Type => "follow_up";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("message", Message);
+}
+
+/// <summary>Control how queued steering messages are delivered ("all" | "one-at-a-time").</summary>
+public sealed record SetSteeringModeCommand(string Mode) : RpcCommand
+{
+    public override string Type => "set_steering_mode";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("mode", Mode);
+}
+
+/// <summary>Control how queued follow-up messages are delivered ("all" | "one-at-a-time").</summary>
+public sealed record SetFollowUpModeCommand(string Mode) : RpcCommand
+{
+    public override string Type => "set_follow_up_mode";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("mode", Mode);
+}
+
 public sealed record GetStateCommand : RpcCommand
 {
     public override string Type => "get_state";
