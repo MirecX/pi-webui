@@ -38,6 +38,7 @@ public sealed class SessionManager : IAsyncDisposable
 
     private readonly Func<IPiRpcClient> _clientFactory;
     private readonly string _sessionsDir;
+    private readonly string _sharedSessionsDir;
 
     /// <summary>
     /// Registered stored (not-loaded) sessions whose history files live OUTSIDE the sessions
@@ -59,6 +60,15 @@ public sealed class SessionManager : IAsyncDisposable
         new(StringComparer.Ordinal);
 
     /// <summary>
+    /// On-the-fly display titles derived from a stored/shared session file's first user
+    /// message (the auto-title "safe fallback" style), keyed by absolute file path. Kept so
+    /// we don't re-parse every .jsonl on every list call. Stems stay the resume identity;
+    /// this is display only.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _derivedTitles =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Most recent exported HTML transcript path per session (name -> absolute path) (ticket #08).
     /// Populated when <c>export_html</c> succeeds so the browser can download the generated file
     /// via the token-gated <c>GET /api/sessions/{name}/export</c> endpoint.
@@ -68,10 +78,14 @@ public sealed class SessionManager : IAsyncDisposable
 
     private readonly string _titlesPath;
 
-    public SessionManager(Func<IPiRpcClient> clientFactory, string? sessionsDir = null)
+    public SessionManager(Func<IPiRpcClient> clientFactory, string? sessionsDir = null, string? sharedSessionsDir = null)
     {
         _clientFactory = clientFactory;
         _sessionsDir = sessionsDir ?? DefaultSessionsDir();
+        // The shared standard pi sessions dir (~/.pi/agent/sessions) — the SAME store the
+        // TUI / any pi uses. We scan it so sessions created outside the webui are browsable
+        // and resumable here (cross-TUI/web continuity). Injectable for tests.
+        _sharedSessionsDir = sharedSessionsDir ?? DefaultSharedSessionsDir();
         _titlesPath = Path.Combine(_sessionsDir, "titles.json");
         LoadPersistedTitles();
     }
@@ -80,6 +94,11 @@ public sealed class SessionManager : IAsyncDisposable
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) ?? ".",
             ".pi", "agent", "extensions", "pi-webui", "sessions");
+
+    private static string DefaultSharedSessionsDir() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) ?? ".",
+            ".pi", "agent", "sessions");
 
     public IReadOnlyList<Session> List() => _sessions.Values.OrderBy(s => s.Name).ToList();
 
@@ -94,29 +113,55 @@ public sealed class SessionManager : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<SessionSummary> ListStoredSessions()
     {
-        var list = new List<SessionSummary>();
-        var loaded = _sessions.Values.ToDictionary(s => s.Name, StringComparer.Ordinal);
-        var seen = new HashSet<string>(loaded.Keys, StringComparer.Ordinal);
-        foreach (var (name, s) in loaded)
+        var entries = new List<(string Name, string Status, string? Title, DateTime LastWriteUtc)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // Loaded sessions (running / recycled), ordered most-recent-first by their file mtime.
+        foreach (var s in _sessions.Values)
         {
-            list.Add(new SessionSummary(
-                name,
-                s.Status == SessionStatus.Running ? "running" : "recycled",
-                s.Title));
+            var last = !string.IsNullOrEmpty(s.HistoryFilePath) && IsNonEmptyFile(s.HistoryFilePath!)
+                ? File.GetLastWriteTimeUtc(s.HistoryFilePath!)
+                : DateTime.UtcNow;
+            entries.Add((s.Name, s.Status == SessionStatus.Running ? "running" : "recycled", s.Title, last));
+            seen.Add(s.Name);
         }
-        foreach (var file in StoredFiles())
+
+        // History files currently backing a loaded session — don't also surface them as
+        // duplicate "stored" entries when scanning the shared dir.
+        var loadedPaths = new HashSet<string>(
+            _sessions.Values.Select(s => s.HistoryFilePath ?? "").Where(p => p.Length > 0),
+            StringComparer.Ordinal);
+
+        // Register + surface an external .jsonl as a stored session. Registering the path in
+        // _storedFiles lets InitAsync resume it by name via switch_session.
+        void AsStored(string state, string fullPath)
         {
-            var name = Path.GetFileNameWithoutExtension(file);
-            if (seen.Add(name))
-                list.Add(new SessionSummary(name, "stored", TitleFor(name)));
+            if (loadedPaths.Contains(fullPath) || !seen.Add(state)) return;
+            if (Get(state) is null && !_storedFiles.ContainsKey(state)) _storedFiles[state] = fullPath;
+            var last = IsNonEmptyFile(fullPath) ? File.GetLastWriteTimeUtc(fullPath) : DateTime.MinValue;
+            // On-the-fly display title (first user message) so a TUI session reads nicely in
+            // the browser instead of a raw timestamp_uuid stem; a persisted title wins.
+            var title = TitleFor(state) ?? DerivedTitle(fullPath);
+            entries.Add((state, "stored", title, last));
         }
-        // registered stored sessions whose files live outside the sessions dir (pi clones)
-        foreach (var (name, _) in _storedFiles)
-        {
-            if (seen.Add(name))
-                list.Add(new SessionSummary(name, "stored", TitleFor(name)));
-        }
-        return list.OrderBy(s => s.Name).ToList();
+
+        // Webui-managed history files under the sessions dir.
+        foreach (var f in StoredFiles()) AsStored(Path.GetFileNameWithoutExtension(f), f);
+
+        // Registered out-of-dir stored sessions (pi clones).
+        foreach (var (name, path) in _storedFiles) AsStored(name, path);
+
+        // Shared standard pi sessions dir (~/.pi/agent/sessions), incl. its cwd-slug
+        // subdirectories, so sessions created in the TUI (or any pi) are browsable +
+        // resumable from the web — cross-TUI/web continuity.
+        foreach (var f in SharedSessionsFiles()) AsStored(Path.GetFileNameWithoutExtension(f), f);
+
+        // Most recent on top.
+        return entries
+            .OrderByDescending(e => e.LastWriteUtc)
+            .ThenBy(e => e.Name, StringComparer.Ordinal)
+            .Select(e => new SessionSummary(e.Name, e.Status, e.Title))
+            .ToList();
     }
 
     /// <summary>The persisted title for a session name, or null when none.</summary>
@@ -208,6 +253,18 @@ public sealed class SessionManager : IAsyncDisposable
     {
         if (!Directory.Exists(_sessionsDir)) yield break;
         foreach (var f in Directory.EnumerateFiles(_sessionsDir, "*.jsonl", SearchOption.TopDirectoryOnly))
+            yield return f;
+    }
+
+    /// <summary>
+    /// Session .jsonl files under the shared standard pi sessions dir (~/.pi/agent/sessions),
+    /// including its cwd-slug subdirectories. Same store the TUI uses, so a session started
+    /// in the terminal can be picked up here.
+    /// </summary>
+    private IEnumerable<string> SharedSessionsFiles()
+    {
+        if (!Directory.Exists(_sharedSessionsDir)) yield break;
+        foreach (var f in Directory.EnumerateFiles(_sharedSessionsDir, "*.jsonl", SearchOption.AllDirectories))
             yield return f;
     }
 
@@ -378,6 +435,65 @@ public sealed class SessionManager : IAsyncDisposable
 
     private static bool IsNonEmptyFile(string path) =>
         File.Exists(path) && new FileInfo(path).Length > 0;
+
+    /// <summary>
+    /// A display title derived from a stored/shared session's first user message (the
+    /// auto-title "safe fallback" style), read straight from the .jsonl without loading pi.
+    /// Cached per file. Returns null when nothing usable is extracted.
+    /// </summary>
+    private string? DerivedTitle(string fullPath)
+    {
+        if (_derivedTitles.TryGetValue(fullPath, out var cached)) return string.IsNullOrEmpty(cached) ? null : cached;
+        var derived = FirstUserMessage(fullPath) ?? "";
+        _derivedTitles[fullPath] = derived;
+        return string.IsNullOrEmpty(derived) ? null : derived;
+    }
+
+    /// <summary>The truncated text of a session file's first user message, or null.</summary>
+    private static string? FirstUserMessage(string file)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines(file))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var isUser =
+                    (root.TryGetProperty("role", out var r) && r.ValueKind == JsonValueKind.String && r.GetString() == "user")
+                    || (root.TryGetProperty("type", out var ty) && ty.ValueKind == JsonValueKind.String && ty.GetString() == "user");
+                if (!isUser) continue;
+                if (root.TryGetProperty("content", out var content))
+                {
+                    var text = FirstText(content);
+                    if (!string.IsNullOrWhiteSpace(text)) return Truncate(text.Trim(), 60);
+                }
+            }
+        }
+        catch { /* unparseable / partial file -> fall back to no derived title */ }
+        return null;
+    }
+
+    /// <summary>First plain-text block of a session content value (string or block array).</summary>
+    private static string FirstText(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.String) return content.GetString() ?? "";
+        if (content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var blk in content.EnumerateArray())
+            {
+                if (blk.ValueKind != JsonValueKind.Object) continue;
+                if (blk.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String && t.GetString() == "text"
+                    && blk.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String)
+                    return txt.GetString() ?? "";
+            }
+        }
+        return "";
+    }
+
+    private static string Truncate(string s, int max)
+        => s.Length <= max ? s : s[..max] + "…";
+
 
     private static string? ExtractSessionFile(RpcResponse? resp)
     {

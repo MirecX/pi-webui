@@ -92,4 +92,53 @@ public class StoredSessionsTests
         var summary = Assert.Single(h.Manager.ListStoredSessions(), s => s.Name == "old-work");
         Assert.Equal("running", summary.Status);
     }
+
+    [Fact]
+    public async Task Shared_pi_sessions_are_listed_most_recent_first_and_resumable()
+    {
+        using var h = new Harness();
+        var shared = Path.Combine(Path.GetTempPath(), $"piwebui-shared-{Guid.NewGuid():N}");
+        try
+        {
+            // Simulate the standard pi sessions dir structure: a cwd-slug subdir with files.
+            var slug = Path.Combine(shared, "--home-user-myproj--");
+            Directory.CreateDirectory(slug);
+            var oldPath = Path.Combine(slug, "2026-08-17T10-00-00-000Z_old.jsonl");
+            var newPath = Path.Combine(slug, "2026-08-17T12-00-00-000Z_new.jsonl");
+            // a real session file: JSONL whose first entry is a user message -> derived title
+            File.WriteAllText(oldPath,
+                "{\"type\":\"user\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Old cardboard session\"}]}\n");
+            File.WriteAllText(newPath,
+                "{\"type\":\"user\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Refactor the auth module to use tokens\"}]}\n");
+            File.SetLastWriteTimeUtc(oldPath, DateTime.UtcNow.AddHours(-2));
+            File.SetLastWriteTimeUtc(newPath, DateTime.UtcNow);
+
+            var clients = new List<FakePiRpcClient>();
+            await using var manager = new SessionManager(
+                () => { var f = new FakePiRpcClient(); clients.Add(f); return f; }, h.Dir, shared);
+
+            var list = manager.ListStoredSessions().ToList();
+
+            // both TUI sessions are browsable as "stored"; the displayed title is derived
+            // on the fly from the first user message (not the ugly timestamp_uuid stem)
+            var newest = Assert.Single(list, s => s.Name == "2026-08-17T12-00-00-000Z_new" && s.Status == "stored");
+            Assert.Equal("Refactor the auth module to use tokens", newest.Title);
+            var oldest = Assert.Single(list, s => s.Name == "2026-08-17T10-00-00-000Z_old" && s.Status == "stored");
+            Assert.Equal("Old cardboard session", oldest.Title);
+            // most recent on top
+            Assert.Equal("2026-08-17T12-00-00-000Z_new", list.First().Name);
+
+            // resumable by name -> fresh child switch_sessions to the shared file
+            var resumed = await manager.InitAsync("2026-08-17T12-00-00-000Z_new");
+            Assert.True(resumed.IsRunning);
+            Assert.Equal(newPath, resumed.HistoryFilePath);
+            var child = Assert.Single(clients);
+            var sw = Assert.Single(child.Sent.OfType<SwitchSessionCommand>());
+            Assert.Equal(newPath, sw.SessionPath);
+        }
+        finally
+        {
+            if (Directory.Exists(shared)) Directory.Delete(shared, recursive: true);
+        }
+    }
 }
