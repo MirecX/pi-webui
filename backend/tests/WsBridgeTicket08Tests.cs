@@ -36,9 +36,9 @@ public class WsBridgeTicket08Tests
                     .RootElement),
             ExportHtmlCommand => new RpcResponse("ex", "export_html", true, null,
                 JsonDocument.Parse("{\"path\":\"/tmp/session.html\"}").RootElement),
-            GetEntriesCommand => new RpcResponse("en", "get_entries", true, null,
+            GetTreeCommand => new RpcResponse("en", "get_tree", true, null,
                 JsonDocument.Parse(
-                    "{\"entries\":[{\"type\":\"message\",\"id\":\"e1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hi\"}}],\"leafId\":\"e1\"}")
+                    "{\"tree\":[{\"entry\":{\"type\":\"message\",\"id\":\"e1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hi\"}},\"children\":[{\"entry\":{\"type\":\"message\",\"id\":\"e2\",\"parentId\":\"e1\",\"message\":{\"role\":\"assistant\",\"content\":\"hi!\"}},\"children\":[]}]}],\"leafId\":\"e2\"}")
                     .RootElement),
             _ => null,
         });
@@ -142,18 +142,18 @@ public class WsBridgeTicket08Tests
     }
 
     [Fact]
-    public async Task Structure_frame_requests_entries_and_relays_to_browser()
+    public async Task Structure_frame_requests_tree_and_relays_to_browser()
     {
         var (_, client, ws, bridge, dir) = await SetupAsync();
         try
         {
             await bridge.HandleMessageAsync("{\"type\":\"structure\"}");
 
-            Assert.Single(client.Sent.OfType<GetEntriesCommand>());
+            Assert.Single(client.Sent.OfType<GetTreeCommand>());
             var frame = Assert.Single(ws.Sent);
             Assert.Contains("\"type\":\"result\"", frame);
             Assert.Contains("\"target\":\"structure\"", frame);
-            Assert.Contains("\"entries\"", frame);
+            Assert.Contains("\"tree\"", frame);
             Assert.Contains("\"e1\"", frame);
         }
         finally { await CleanupAsync(default!, client, dir); }

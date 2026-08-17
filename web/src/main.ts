@@ -315,6 +315,13 @@ function setup(): void {
   const sessionStructure = document.querySelector<HTMLDetailsElement>("#session-structure")!;
   let lastExportPath: string | null = null;
 
+  // Auto-retry is an optimistic, PER-SESSION value: rpc.md get_state does NOT expose
+  // autoRetryEnabled, so pi can't confirm it back. We persist what the user toggles for
+  // each session in this map and restore it on switch/reconnect so the checkbox reflects
+  // the user's choice for that session's lifetime instead of silently resetting (and
+  // misreporting). With no known value yet, default to off (pi's default setting).
+  const sessionAutoRetry = new Map<string, boolean>();
+
   const kv = (k: string, v: unknown, suffix = ""): string =>
     `${k}: ${String(v ?? "—")}${suffix}`;
 
@@ -357,18 +364,42 @@ function setup(): void {
     sessionStatsEl.textContent = lines.join(" · ");
   }
 
-  function renderEntries(d?: unknown): void {
+  /** A node returned by rpc.md get_tree: { entry, children, label?, labelTimestamp? }. */
+  interface TreeNode {
+    entry?: { type?: string; id?: string; message?: { role?: string } | null } | null;
+    children?: TreeNode[] | null;
+    label?: string | null;
+  }
+
+  function nodeLabel(e: TreeNode["entry"]): string {
+    if (!e) return "?";
+    const role = e.message?.role ?? "";
+    return `${e.type ?? "?"}${role ? ` [${role}]` : ""} ${e.id ?? ""}`.trim();
+  }
+
+  /** Recursively render the session as an indented tree (nested <ul>), not a flat list. */
+  function appendTreeNodes(parent: HTMLUListElement, nodes: TreeNode[]): void {
+    for (const n of nodes ?? []) {
+      const li = el("li", undefined);
+      li.append(el("span", n.label ?? nodeLabel(n.entry)));
+      parent.append(li);
+      const kids = n.children ?? [];
+      if (kids.length) {
+        const ul = el("ul", undefined, "tree-children");
+        appendTreeNodes(ul, kids);
+        li.append(ul);
+      }
+    }
+  }
+
+  function renderTree(d?: unknown): void {
     sessionEntriesEl.textContent = "";
-    const entries = ((d ?? {}) as { entries?: Array<{ type?: string; id?: string; message?: { role?: string } | null }> }).entries ?? [];
-    if (!entries.length) {
+    const tree = ((d ?? {}) as { tree?: TreeNode[] }).tree ?? [];
+    if (!tree.length) {
       sessionEntriesEl.append(el("li", "(no entries yet)"));
       return;
     }
-    for (const e of entries) {
-      const role = (e as { message?: { role?: string } | null }).message?.role ?? "";
-      const label = `${e.type ?? "?"}${role ? ` [${role}]` : ""} ${e.id ?? ""}`;
-      sessionEntriesEl.append(el("li", label.trim()));
-    }
+    appendTreeNodes(sessionEntriesEl, tree);
   }
 
   function renderExport(): void {
@@ -591,10 +622,10 @@ function setup(): void {
         }
         break;
       }
-      case "get_state": {
-        // Restore the attached session's ACTUAL current selection on reconnect/tab-switch
-        // (rpc.md get_state exposes model + thinkingLevel), so the pickers reflect what the
-        // session is really using rather than showing nothing. Per-session.
+      case "state": {
+        // Single unified path (formerly get_state/state were duplicated): rpc.md get_state
+        // exposes model + thinkingLevel, so this restores the attached session's ACTUAL
+        // current selection for the pickers AND renders the session panel from one round trip.
         const d = r.data as { model?: ModelInfo | null; thinkingLevel?: string } | undefined;
         if (d?.model) {
           currentModel = d.model;
@@ -604,6 +635,7 @@ function setup(): void {
         }
         currentThinkingLevel = d?.thinkingLevel ?? null;
         renderPickers();
+        renderState(r.data);
         break;
       }
       case "set_thinking_level":
@@ -631,7 +663,7 @@ function setup(): void {
         break;
       }
       case "structure": {
-        renderEntries(r.data);
+        renderTree(r.data);
         break;
       }
       case "export_html": {
@@ -762,11 +794,12 @@ function setup(): void {
       renderPickers();
       wsSend({ type: "models" });
       wsSend({ type: "thinking_levels" });
-      // Fetch the attached session's actual current model + thinking level so the pickers
-      // are restored to the real selection (not left empty) after connect/tab-switch.
-      wsSend({ type: "get_state" });
-      // Populate the session panel (state/stats/structure) for this session (ticket #08).
+      // The session panel's `state` frame (via refreshPanel) is the single unified get_state
+      // path — it restores the actual current model + thinking level AND renders the panel.
+      // No separate `get_state` send here (deduped).
       refreshPanel();
+      // Restore this session's optimistic auto-retry choice (per-session; unknown -> off).
+      autoRetryChk.checked = sessionAutoRetry.get(active) ?? false;
       // Flush a HITL answer buffered while the socket was down, so a mid-reconnect answer
       // reaches the freshly-reconnected session's child instead of being silently dropped.
       const buffered = pendingAnswers.get(active);
@@ -938,6 +971,10 @@ function setup(): void {
 
   autoRetryChk.addEventListener("change", () => {
     if (!active) return;
+    // Optimistic, per-session: pi's get_state does NOT expose autoRetryEnabled, so we keep
+    // the user's choice in the session map and restore it on switch/reconnect rather than
+    // letting the checkbox reset (and misreport) after a toggle/refresh/tab-switch.
+    sessionAutoRetry.set(active, autoRetryChk.checked);
     wsSend({ type: "set_auto_retry", enabled: autoRetryChk.checked });
   });
 

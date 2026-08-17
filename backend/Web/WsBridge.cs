@@ -170,11 +170,6 @@ public sealed class WsBridge
                     await DispatchModelCommandAsync("set_model", s => s.SetModelAsync(provider, modelId)).ConfigureAwait(false);
                 }
                 break;
-            case "get_state":
-                // Fetch the attached session's actual current selection (model + thinkingLevel)
-                // so the browser can restore its pickers on reconnect/tab-switch (ticket #04).
-                await DispatchModelCommandAsync("get_state", s => s.GetStateAsync()).ConfigureAwait(false);
-                break;
             case "thinking_levels":
                 await DispatchModelCommandAsync("thinking_levels", s => s.GetAvailableThinkingLevelsAsync()).ConfigureAwait(false);
                 break;
@@ -206,13 +201,14 @@ public sealed class WsBridge
                 await DispatchModelCommandAsync("stats", s => s.GetSessionStatsAsync()).ConfigureAwait(false);
                 break;
             case "structure":
-                // Session structure (rpc.md get_entries) for the session panel. Reused
-                // get_state (below) for state; entries make the structure visible.
-                await DispatchModelCommandAsync("structure", s => s.GetEntriesAsync()).ConfigureAwait(false);
+                // Session structure as a real tree (rpc.md get_tree) for the session panel,
+                // so the hierarchy is genuinely visible rather than a flat entry list.
+                await DispatchModelCommandAsync("structure", s => s.GetTreeAsync()).ConfigureAwait(false);
                 break;
             case "state":
-                // Reuse get_state (already wired above for model/thinking restore); this is
-                // the same command surfaced as a distinct frame for the session panel.
+                // Fetch the attached session's ACTUAL current selection (model + thinkingLevel +
+                // autoCompactionEnabled + stats), feeding BOTH the model/thinking pickers and the
+                // session panel from one round trip (dedupes the former get_state case).
                 await DispatchModelCommandAsync("state", s => s.GetStateAsync()).ConfigureAwait(false);
                 break;
             case "export_html":

@@ -214,14 +214,13 @@ public sealed record ExportHtmlCommand(string? OutputPath = null) : RpcCommand
     }
 }
 
-/// <summary>Get all session entries for the structure panel (rpc.md <c>get_entries</c>, optional cursor <c>since</c>).</summary>
-public sealed record GetEntriesCommand(string? Since = null) : RpcCommand
+/// <summary>
+/// Get the session as a tree of entries for the structure panel (rpc.md <c>get_tree</c>);
+/// each node is <c>{ entry, children, label?, labelTimestamp? }</c>.
+/// </summary>
+public sealed record GetTreeCommand : RpcCommand
 {
-    public override string Type => "get_entries";
-    protected override void WriteExtra(Utf8JsonWriter w)
-    {
-        if (Since is not null) w.WriteString("since", Since);
-    }
+    public override string Type => "get_tree";
 }
 
 // ---------------------------------------------------------------------------

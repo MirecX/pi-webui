@@ -685,10 +685,11 @@ public class WsBridgeTests
     }
 
     [Fact]
-    public async Task Get_state_frame_relays_current_model_and_thinking_level_to_browser()
+    public async Task State_frame_relays_current_model_and_thinking_level_to_browser()
     {
         // rpc.md get_state exposes the session's ACTUAL current model + thinkingLevel, which
-        // the frontend uses to restore its pickers on reconnect/tab-switch (ticket #04).
+        // the frontend uses to restore its pickers on reconnect/tab-switch (ticket #04). The
+        // `state` frame is the single unified path (formerly get_state/state were duplicated).
         var client = new FakePiRpcClient(cmd =>
             cmd is GetStateCommand
                 ? new RpcResponse("gs", "get_state", true, null,
@@ -705,13 +706,13 @@ public class WsBridgeTests
             var ws = new FakeWsClient();
             var bridge = new WsBridge(mgr, "a", ws);
 
-            await bridge.HandleMessageAsync("{\"type\":\"get_state\"}");
+            await bridge.HandleMessageAsync("{\"type\":\"state\"}");
 
             // get_state is sent here plus once by InitAsync for session-file discovery.
             Assert.Equal(2, client.Sent.OfType<GetStateCommand>().Count());
             var frame = Assert.Single(ws.Sent);
             Assert.Contains("\"type\":\"result\"", frame);
-            Assert.Contains("\"target\":\"get_state\"", frame);
+            Assert.Contains("\"target\":\"state\"", frame);
             Assert.Contains("claude-3-5-sonnet", frame); // the current model restored
             Assert.Contains("\"thinkingLevel\":\"high\"", frame); // the current level restored
         }

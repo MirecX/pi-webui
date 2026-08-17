@@ -162,9 +162,9 @@ public sealed class Session : IAsyncDisposable
     public Task<RpcResponse?> ExportHtmlAsync(string? outputPath = null, CancellationToken ct = default)
         => SendCommand(() => new ExportHtmlCommand(outputPath), "export_html", ct);
 
-    /// <summary>List this session's entries for the structure panel (rpc.md <c>get_entries</c>).</summary>
-    public Task<RpcResponse?> GetEntriesAsync(CancellationToken ct = default)
-        => SendCommand(() => new GetEntriesCommand(), "get_entries", ct);
+    /// <summary>Get this session as a tree of entries for the structure panel (rpc.md <c>get_tree</c>).</summary>
+    public Task<RpcResponse?> GetTreeAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetTreeCommand(), "get_tree", ct);
 
     /// <summary>
     /// Send a HITL dialog answer back to this session's child as an

@@ -539,8 +539,11 @@ pre {
   padding: 0 0 0 4px;
   max-height: 160px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
 }
+.session-entries .tree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+}
+.session-entries li { white-space: nowrap; }
 #session-export a { color: var(--accent); }
