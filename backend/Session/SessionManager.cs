@@ -54,6 +54,41 @@ public sealed class SessionManager : IAsyncDisposable
     public Session? Get(string name) => _sessions.TryGetValue(name, out var s) ? s : null;
 
     /// <summary>
+    /// List every session the browser can open, including STORED ones not currently loaded:
+    /// loaded sessions first (running/recycled), then session files under the sessions dir
+    /// that have no live <see cref="Session"/> (status "stored"). Any status other than
+    /// "running" is resumable by re-initialising the same name (HistoryPathFor round-trips to
+    /// the existing file, which <see cref="StartChildAsync"/> resumes via switch_session).
+    /// </summary>
+    public IReadOnlyList<SessionSummary> ListStoredSessions()
+    {
+        var list = new List<SessionSummary>();
+        var loaded = _sessions.Values.ToDictionary(s => s.Name, StringComparer.Ordinal);
+        foreach (var (name, s) in loaded)
+        {
+            list.Add(new SessionSummary(
+                name,
+                s.Status == SessionStatus.Running ? "running" : "recycled",
+                s.Title));
+        }
+        foreach (var file in StoredFiles())
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            if (!loaded.ContainsKey(name))
+                list.Add(new SessionSummary(name, "stored", null));
+        }
+        return list.OrderBy(s => s.Name).ToList();
+    }
+
+    /// <summary>The managed session files under <see cref="_sessionsDir"/> (incl. recycled, not-loaded).</summary>
+    private IEnumerable<string> StoredFiles()
+    {
+        if (!Directory.Exists(_sessionsDir)) yield break;
+        foreach (var f in Directory.EnumerateFiles(_sessionsDir, "*.jsonl", SearchOption.TopDirectoryOnly))
+            yield return f;
+    }
+
+    /// <summary>
     /// Create the named session (or resume it if it was recycled). Idempotent for an
     /// already-running session.
     /// </summary>
@@ -162,6 +197,11 @@ public sealed class SessionManager : IAsyncDisposable
         {
             client.Start();
 
+            // A fresh session with no preserved history is auto-titled from its first user
+            // message (ticket #06); a session resumed from history keeps its identity and is
+            // not re-titled. Records the flag for the WS bridge to fire on the first prompt.
+            s.AutoTitlePending = candidatePath is null || !IsNonEmptyFile(candidatePath);
+
             if (candidatePath is not null && IsNonEmptyFile(candidatePath))
             {
                 // A preserved history file exists (e.g. across a server restart, or a
@@ -214,3 +254,11 @@ public sealed class SessionManager : IAsyncDisposable
         catch { /* best-effort removal */ }
     }
 }
+
+/// <summary>
+/// A session as shown in the browser list (ticket #06). <see cref="Status"/> is one of
+/// "running", "recycled" (loaded but stopped, history preserved), or "stored" (a history
+/// file exists under the sessions dir but no session is loaded). Any status other than
+/// "running" can be resumed by re-initialising the same name.
+/// </summary>
+public sealed record SessionSummary(string Name, string Status, string? Title);

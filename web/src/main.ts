@@ -13,10 +13,17 @@ interface MessageUpdateEvent extends RpcEvent {
   assistantMessageEvent?: { type: string; delta?: string };
 }
 
-/** Server-side lifecycle frame pushed by the WS bridge (ticket #05). */
+/** Server-side lifecycle frame pushed by the WS bridge (tickets #05/#06). */
 interface SessionInfo {
   name: string;
-  status: "running" | "recycled" | "deleted";
+  status: "running" | "recycled" | "stored" | "deleted";
+  title?: string | null;
+}
+
+/** A user message available for forking (rpc.md get_fork_messages). */
+interface ForkMessage {
+  entryId: string;
+  text: string;
 }
 
 /** A model as reported by get_available_models / set_model (subset of the pi Model). */
@@ -247,12 +254,16 @@ function setup(): void {
   const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
   const recycleBtn = document.querySelector<HTMLButtonElement>("#recycle")!;
   const deleteBtn = document.querySelector<HTMLButtonElement>("#delete")!;
+  const forkBtn = document.querySelector<HTMLButtonElement>("#fork")!;
+  const cloneBtn = document.querySelector<HTMLButtonElement>("#clone")!;
 
   const token = readToken();
 
   // --- controller ----------------------------------------------------------
-  const sessions = new Map<string, string>(); // name -> status
+  const sessions = new Map<string, SessionInfo>(); // name -> info
   let active = "";
+  let forkMessages: ForkMessage[] = [];
+  let pendingFork = false;
 
   // --- model + thinking pickers (ticket #04) --------------------------------
   const modelSelect = document.querySelector<HTMLSelectElement>("#model-select")!;
@@ -302,35 +313,52 @@ function setup(): void {
     return res;
   }
 
-  async function createSession(name: string): Promise<void> {
-    await api("/api/sessions", {
+  async function createSession(name: string): Promise<SessionInfo> {
+    const res = await api("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
-    sessions.set(name, "running");
+    const info = (await res.json()) as SessionInfo;
+    sessions.set(name, info);
+    return info;
+  }
+
+  /** Resume a stored/recycled session: REST init resumes an existing history file. */
+  async function resumeSession(name: string): Promise<void> {
+    try {
+      await createSession(name);
+    } catch {
+      status.set(`failed to resume ${name}`);
+      return;
+    }
+    selectSession(name);
   }
 
   async function refreshSessions(): Promise<void> {
     const res = await api("/api/sessions");
     const list = (await res.json()) as SessionInfo[];
     sessions.clear();
-    for (const s of list) sessions.set(s.name, s.status);
+    for (const s of list) sessions.set(s.name, s);
   }
 
   // --- rendering -----------------------------------------------------------
   function statusClass(s: string): string {
-    return s === "running" ? "running" : "recycled";
+    return s === "running" ? "running" : s === "stored" ? "stored" : "recycled";
   }
 
   function renderSessions(): void {
     sessionListEl.textContent = "";
     const names = [...sessions.keys()].sort();
     for (const name of names) {
+      const info = sessions.get(name);
+      const st = info?.status ?? "";
       const item = el("li", undefined, "session-item");
       if (name === active) item.classList.add("active");
-      item.append(el("span", undefined, `dot ${statusClass(sessions.get(name) ?? "")}`));
-      const label = el("span", name, "name");
+      item.append(el("span", undefined, `dot ${statusClass(st)}`));
+      // show the auto-title when present (ticket #06); the stable name in the tooltip
+      const labelText = info?.title && info.title !== name ? `${info.title} — ${name}` : name;
+      const label = el("span", labelText, "name");
       label.title = name;
       const del = el("button", "×", "del");
       del.title = "Delete session";
@@ -339,18 +367,24 @@ function setup(): void {
         wsSend({ type: "delete", name });
       });
       item.append(label, del);
-      item.addEventListener("click", () => selectSession(name));
+      // reselect resumes a stored/recycled session (REST init resumes its history file)
+      item.addEventListener("click", () => {
+        if (st && st !== "running") void resumeSession(name);
+        else selectSession(name);
+      });
       sessionListEl.append(item);
     }
     activeEl.textContent = active ? `session: ${active}` : "";
     recycleBtn.disabled = !active;
     deleteBtn.disabled = !active;
+    forkBtn.disabled = !active;
+    cloneBtn.disabled = !active;
   }
 
   function selectSession(name: string): void {
     if (name === active) return;
     active = name;
-    if (!sessions.has(name)) sessions.set(name, "running");
+    if (!sessions.has(name)) sessions.set(name, { name, status: "running" });
     renderSessions();
     connect();
   }
@@ -450,6 +484,18 @@ function setup(): void {
         // plain set returns no data; the level we selected is already current.
         renderPickers();
         break;
+      case "get_fork_messages": {
+        forkMessages = (r.data as { messages?: ForkMessage[] } | undefined)?.messages ?? [];
+        break;
+      }
+      case "fork":
+      case "clone": {
+        // a fork/clone may create a new branch file; refresh the stored list (ticket #06)
+        forkMessages = [];
+        pendingFork = false;
+        void refreshSessions().then(() => renderSessions());
+        break;
+      }
     }
   }
 
@@ -457,7 +503,11 @@ function setup(): void {
     if (obj.type === "session_event") {
       const s = obj.session as SessionInfo;
       if (s.status === "deleted") sessions.delete(s.name);
-      else sessions.set(s.name, s.status);
+      else {
+        const prev = sessions.get(s.name);
+        // merge so a title-only event (auto-title, ticket #06) keeps the known status/name
+        sessions.set(s.name, { name: s.name, status: s.status, title: s.title ?? prev?.title });
+      }
 
       if (s.name === active && s.status === "deleted") fallbackAfterActiveDeleted();
       else renderSessions();
@@ -469,7 +519,11 @@ function setup(): void {
     }
     if (obj.type === "result") {
       handleResult(obj as ResultFrame);
-      return; // model/thinking pickers only, not a transcript event
+      if (obj.target === "get_fork_messages" && pendingFork) {
+        pendingFork = false;
+        showForkPicker();
+      }
+      return; // model/thinking/fork picker data only, not a transcript event
     }
     if (obj.type === "agent_start") {
       agentRunning = true;
@@ -659,6 +713,52 @@ function setup(): void {
   deleteBtn.addEventListener("click", () => {
     if (active) wsSend({ type: "delete", name: active });
   });
+
+  // --- fork / clone (ticket #06) ------------------------------------------
+  forkBtn.addEventListener("click", () => {
+    if (!active) return;
+    pendingFork = true;
+    forkMessages = [];
+    wsSend({ type: "get_fork_messages" });
+  });
+
+  cloneBtn.addEventListener("click", () => {
+    if (!active) return;
+    wsSend({ type: "clone" });
+  });
+
+  /**
+   * Light picker over the fork messages (get_fork_messages) so the user chooses which
+   * message to fork from; sends the fork command for the chosen entryId (rpc.md).
+   */
+  function showForkPicker(): void {
+    if (!forkMessages.length) {
+      status.set("no messages to fork from — send a prompt first");
+      return;
+    }
+    const overlay = el("div", undefined, "fork-overlay");
+    const box = el("div", undefined, "fork-box");
+    box.append(el("div", "Fork from which message?", "fork-title"));
+    const select = el("select", undefined, "fork-select") as HTMLSelectElement;
+    for (const m of forkMessages) {
+      const opt = el("option", m.text.slice(0, 80) || "(empty)") as HTMLOptionElement;
+      opt.value = m.entryId;
+      select.append(opt);
+    }
+    box.append(select);
+    const actions = el("div", undefined, "fork-actions");
+    const cancel = el("button", "Cancel", "btn");
+    const fork = el("button", "Fork", "btn primary");
+    cancel.addEventListener("click", () => overlay.remove());
+    fork.addEventListener("click", () => {
+      wsSend({ type: "fork", entryId: select.value });
+      overlay.remove();
+    });
+    actions.append(cancel, fork);
+    box.append(actions);
+    overlay.append(box);
+    document.body.append(overlay);
+  }
 
   // --- boot ----------------------------------------------------------------
   (async () => {

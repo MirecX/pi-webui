@@ -78,6 +78,43 @@ public sealed record SwitchSessionCommand(string SessionPath) : RpcCommand
     protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("sessionPath", SessionPath);
 }
 
+/// <summary>Start a fresh session (rpc.md <c>new_session</c>). Disconnects from the current one.</summary>
+public sealed record NewSessionCommand(string? ParentSession = null) : RpcCommand
+{
+    public override string Type => "new_session";
+    protected override void WriteExtra(Utf8JsonWriter w)
+    {
+        if (ParentSession is not null) w.WriteString("parentSession", ParentSession);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session browser: fork / clone / get_fork_messages (ticket #06)
+// Wire format per rpc.md — names are not invented.
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// Create a new fork from a previous user message on the active branch (rpc.md
+/// <c>fork</c>). Response data carries <c>text</c> = the forking message's text.
+/// </summary>
+public sealed record ForkCommand(string EntryId) : RpcCommand
+{
+    public override string Type => "fork";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("entryId", EntryId);
+}
+
+/// <summary>Duplicate the current active branch into a new session at the current position (rpc.md <c>clone</c>).</summary>
+public sealed record CloneCommand : RpcCommand
+{
+    public override string Type => "clone";
+}
+
+/// <summary>List the user messages available for forking (rpc.md <c>get_fork_messages</c>).</summary>
+public sealed record GetForkMessagesCommand : RpcCommand
+{
+    public override string Type => "get_fork_messages";
+}
+
 // ---------------------------------------------------------------------------
 // Model + thinking switch (ticket #04) — wire format per rpc.md
 // ---------------------------------------------------------------------------

@@ -33,6 +33,21 @@ public sealed class Session : IAsyncDisposable
     public string Name { get; }
 
     /// <summary>
+    /// Auto/manual display title (ticket #06). Populated from the session's first user
+    /// message by the title generator; <c>null</c> until titled. Survives recycle so a
+    /// resumed session keeps its scannable label.
+    /// </summary>
+    public string? Title { get; set; }
+
+    /// <summary>
+    /// True while this fresh session has not yet been auto-titled from its first user
+    /// message. Set <c>true</c> only for brand-new (no-history) sessions; cleared once a
+    /// title is requested so the generation fires exactly once. Sessions resumed from a
+    /// preserved history (already titled / not first-turn) do not re-title.
+    /// </summary>
+    internal bool AutoTitlePending { get; set; }
+
+    /// <summary>
     /// Absolute path of this session's history file. Preserved across recycle so a
     /// fresh child can resume it via <c>switch_session</c>; removed on delete.
     /// </summary>
@@ -104,6 +119,18 @@ public sealed class Session : IAsyncDisposable
     /// </summary>
     public Task<RpcResponse?> GetStateAsync(CancellationToken ct = default)
         => SendCommand(() => new GetStateCommand(), "get_state", ct);
+
+    /// <summary>Fork the session from a previous user message (rpc.md <c>fork</c>; data.text = the forking message).</summary>
+    public Task<RpcResponse?> ForkAsync(string entryId, CancellationToken ct = default)
+        => SendCommand(() => new ForkCommand(entryId), "fork", ct);
+
+    /// <summary>Clone the active branch into a new session at the current position (rpc.md <c>clone</c>).</summary>
+    public Task<RpcResponse?> CloneAsync(CancellationToken ct = default)
+        => SendCommand(() => new CloneCommand(), "clone", ct);
+
+    /// <summary>List the user messages available for forking (rpc.md <c>get_fork_messages</c>).</summary>
+    public Task<RpcResponse?> GetForkMessagesAsync(CancellationToken ct = default)
+        => SendCommand(() => new GetForkMessagesCommand(), "get_fork_messages", ct);
 
     /// <summary>List the thinking levels supported by this session's current model.</summary>
     public Task<RpcResponse?> GetAvailableThinkingLevelsAsync(CancellationToken ct = default)

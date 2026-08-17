@@ -143,6 +143,53 @@ header h1 {
 .session-item .dot.recycled {
   background: var(--muted);
 }
+.session-item .dot.stored {
+  background: var(--accent);
+}
+
+.fork-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.fork-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  min-width: 320px;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fork-title { font-size: 13px; font-weight: 600; }
+.fork-select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  font: inherit;
+  font-size: 12px;
+}
+.fork-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.fork-actions .btn {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fork-actions .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+
 
 .session-item .name {
   flex: 1;

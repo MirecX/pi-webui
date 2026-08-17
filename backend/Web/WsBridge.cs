@@ -24,6 +24,7 @@ public sealed class WsBridge
     private readonly SessionManager _sessions;
     private readonly string _sessionName;
     private readonly IWsClient _client;
+    private readonly SessionAutoTitler? _titler;
 
     private readonly object _subLock = new();
     private Channel<RpcEvent>? _sub;
@@ -41,11 +42,17 @@ public sealed class WsBridge
     /// <summary>True after the attached agent has emitted at least one terminal settle.</summary>
     internal bool HasSettled => _hasSettled;
 
-    public WsBridge(SessionManager sessions, string sessionName, IWsClient client)
+    /// <param name="titler">
+    /// Optional auto-titler (ticket #06). When <c>null</c> auto-title is disabled — the
+    /// server wires the real <see cref="TitleGenerator"/>; tests inject a stub or omit it.
+    /// Kept as a seam so existing tests that send prompts are unaffected (no extra frames).
+    /// </param>
+    public WsBridge(SessionManager sessions, string sessionName, IWsClient client, SessionAutoTitler? titler = null)
     {
         _sessions = sessions;
         _sessionName = sessionName;
         _client = client;
+        _titler = titler;
         EnsureSubscribed();
     }
 
@@ -178,6 +185,22 @@ public sealed class WsBridge
                 }
                 break;
 
+            // --- session browser: fork / clone / get_fork_messages (ticket #06) ----
+            // All scoped to the ATTACHED session's child; results relayed as `result` frames
+            // (fork returns the forking message text; clone/get_fork_messages return data).
+            case "get_fork_messages":
+                await DispatchModelCommandAsync("get_fork_messages", s => s.GetForkMessagesAsync()).ConfigureAwait(false);
+                break;
+            case "fork":
+                if (root.TryGetProperty("entryId", out var eidProp) && eidProp.GetString() is { } entryId)
+                {
+                    await DispatchModelCommandAsync("fork", s => s.ForkAsync(entryId)).ConfigureAwait(false);
+                }
+                break;
+            case "clone":
+                await DispatchModelCommandAsync("clone", s => s.CloneAsync()).ConfigureAwait(false);
+                break;
+
             case "init":
             case "recycle":
             case "delete":
@@ -198,7 +221,54 @@ public sealed class WsBridge
         // running, default to "steer" so the composer's question queues for delivery before
         // the next LLM call. When the agent is idle no streamingBehavior is needed.
         var streamingBehavior = frameStreamingBehavior ?? (_agentRunning ? "steer" : null);
+
+        // Auto-title a fresh, untitled session from its FIRST user message (ticket #06).
+        // Fire-and-forget: title generation is a separate, non-blocking completion at the
+        // box's default model endpoint, so it NEVER delays the agent's first turn. Gated so
+        // it runs once per fresh session and only when a titler is wired (not in old tests).
+        if (_titler is not null)
+        {
+            var s = _sessions.Get(_sessionName);
+            if (s is { AutoTitlePending: true })
+            {
+                s.AutoTitlePending = false; // fire exactly once
+                _ = AutoTitleAsync(s, message);
+            }
+        }
+
         await DispatchTurnAsync("prompt", s => s.PromptAsync(message, streamingBehavior)).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Generate a title for <paramref name="s"/> from its first user message and surface it
+    /// to the browser as a <c>session_event</c> (action "title"). Never throws out; on any
+    /// failure the fallback (truncated first message + timestamp) is applied instead.
+    /// </summary>
+    private async Task AutoTitleAsync(PiWebui.Session.Session s, string firstMessage)
+    {
+        string title;
+        try
+        {
+            title = await _titler!.GenerateAsync(firstMessage).ConfigureAwait(false);
+        }
+        catch
+        {
+            title = SessionAutoTitler.Fallback(firstMessage);
+        }
+        s.Title = title;
+        try
+        {
+            await _client.SendAsync(JsonSerializer.Serialize(new
+            {
+                type = "session_event",
+                action = "title",
+                session = new { name = s.Name, status = s.Status.ToString().ToLowerInvariant(), title },
+            }), default).ConfigureAwait(false);
+        }
+        catch
+        {
+            // best-effort: the client may already be closed
+        }
     }
 
     /// <summary>
