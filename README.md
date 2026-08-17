@@ -26,7 +26,9 @@ The server loads `~/.pi/agent/extensions/pi-webui/config.json` (fallback to repo
 `./config.json`), auto-generating + printing a token on first run (auth is
 enforced in ticket #02). Open `http://<box-ip>:<PORT>` and watch the live session;
 the send box prompts the agent and the reply streams back. (External reachability
-= SSH host port + 10000, opt-in — DESIGN.md §6.)
+= SSH host port + 10000, opt-in — DESIGN.md §6; see `docker-compose.example.yml` for
+the container port mapping, which only takes effect when `external: true` is set in
+the service config.)
 
 ## Development
 

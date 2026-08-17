@@ -39,10 +39,10 @@ public static class TokenAuth
 
 /// <summary>
 /// ASP.NET middleware enforcing the config token on every HTTP request and
-/// WebSocket handshake (except CORS preflight OPTIONS). Missing or mismatched
-/// tokens are rejected with 401 before any downstream handler runs. On the first
-/// authenticated <c>?token=</c> request it drops a same-origin cookie so later
-/// static / WS requests (same origin) carry the token automatically.
+/// WebSocket handshake. Missing or mismatched tokens are rejected with 401 before
+/// any downstream handler runs. On the first authenticated <c>?token=</c> request
+/// it drops a same-origin cookie so later static / WS requests (same origin)
+/// carry the token automatically.
 /// </summary>
 public sealed class TokenAuthMiddleware
 {
@@ -57,10 +57,8 @@ public sealed class TokenAuthMiddleware
 
     public Task InvokeAsync(HttpContext ctx)
     {
-        // Allow CORS pre-flight through (it carries no auth by design).
-        if (HttpMethods.IsOptions(ctx.Request.Method))
-            return _next(ctx);
-
+        // Every verb — including OPTIONS (no CORS requirement in the design) — is
+        // token-gated.
         var presented = TokenAuth.ExtractFrom(ctx);
         if (string.IsNullOrEmpty(presented) || !string.Equals(presented, _token, StringComparison.Ordinal))
         {

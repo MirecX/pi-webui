@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using PiWebui;
 using PiWebui.Web;
 using Xunit;
 
@@ -85,11 +86,17 @@ public class TokenAuthTests
     [Fact]
     public async Task Valid_bearer_and_header_and_cookie_all_accepted()
     {
-        await Mw().InvokeAsync(Ctx(path: "/", bearer: "secret"));
-        await Mw().InvokeAsync(Ctx(path: "/", header: "secret"));
-        await Mw().InvokeAsync(Ctx(path: "/", cookie: "secret"));
-        // no assert on status would have thrown on 401 only if we checked; verify 200
-        Assert.True(true);
+        var bearer = Ctx(path: "/", bearer: "secret");
+        await Mw().InvokeAsync(bearer);
+        Assert.Equal(StatusCodes.Status200OK, bearer.Response.StatusCode);
+
+        var header = Ctx(path: "/", header: "secret");
+        await Mw().InvokeAsync(header);
+        Assert.Equal(StatusCodes.Status200OK, header.Response.StatusCode);
+
+        var cookie = Ctx(path: "/", cookie: "secret");
+        await Mw().InvokeAsync(cookie);
+        Assert.Equal(StatusCodes.Status200OK, cookie.Response.StatusCode);
     }
 
     [Fact]
@@ -114,11 +121,50 @@ public class TokenAuthTests
     }
 
     [Fact]
-    public async Task Options_preflight_allowed_without_token()
+    public async Task Options_preflight_is_also_token_gated()
     {
-        var ctx = Ctx(method: "OPTIONS", path: "/ws");
-        await Mw().InvokeAsync(ctx);
-        Assert.Equal(StatusCodes.Status200OK, ctx.Response.StatusCode); // passes through to next
+        // No CORS requirement in the design; every verb — including OPTIONS — needs the token.
+        var noToken = Ctx(method: "OPTIONS", path: "/ws");
+        await Mw().InvokeAsync(noToken);
+        Assert.Equal(StatusCodes.Status401Unauthorized, noToken.Response.StatusCode);
+
+        var withToken = Ctx(method: "OPTIONS", path: "/ws", query: "secret");
+        await Mw().InvokeAsync(withToken);
+        Assert.Equal(StatusCodes.Status200OK, withToken.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rotating_token_in_config_is_effective_on_restart()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-rot-{Guid.NewGuid():N}");
+        var path = Path.Combine(dir, "config.json");
+        try
+        {
+            // first run: config written with token A
+            var first = Config.Load(path);
+
+            // restart: fresh load from a reloaded config file that now holds token B
+            File.WriteAllText(path, $"{{\"token\":\"rotated\",\"port\":{Config.DefaultPort}}}");
+            var second = Config.Load(path);
+            var newMw = Mw(second.Token);
+
+            Assert.NotEqual(first.Token, second.Token);
+            Assert.Equal("rotated", second.Token);
+
+            // the stale token no longer authenticates against the reloaded middleware
+            var stale = Ctx(path: "/", query: first.Token);
+            await newMw.InvokeAsync(stale);
+            Assert.Equal(StatusCodes.Status401Unauthorized, stale.Response.StatusCode);
+
+            // the rotated token does
+            var fresh = Ctx(path: "/", query: second.Token);
+            await newMw.InvokeAsync(fresh);
+            Assert.Equal(StatusCodes.Status200OK, fresh.Response.StatusCode);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
     }
 
     // helpers -----------------------------------------------------------------

@@ -1,0 +1,17 @@
+# Example container mapping for the pi-webui external port.
+#
+# The server binds 127.0.0.1:8456 by default and is NOT reachable from outside
+# the container. Only when the service config opts in ({"external": true}) does it
+# bind 0.0.0.0, making the mapping below live. External port = SSH host port + 10000.
+#
+#   1. Set "external": true in the service config (config.json) to opt in.
+#   2. Define HOST_PORT (the host's SSH port; the external web port is HOST_PORT + 10000).
+#   3. Uncomment the ports block below.
+#
+# services:
+#   pi-webui:
+#     image: your-pi-webui-image
+#     environment:
+#       - HOST_PORT=2222        # -> external web port 12222
+#     ports:
+#       - "${HOST_PORT}:8456"

@@ -7,9 +7,10 @@ namespace PiWebui;
 /// <summary>
 /// Service configuration. Container-agnostic, stored as JSON at
 /// ~/.pi/agent/extensions/pi-webui/config.json (falling back to ./config.json).
-/// Fields: { token, port }.
-/// The token is auto-generated + printed once on first run. Auth enforcement is
-/// ticket #02; here we only store/generate it.
+/// Fields: { token, port, external }.
+/// The token is auto-generated + printed once on first run. It is enforced on
+/// every HTTP request and WebSocket handshake by TokenAuthMiddleware (see
+/// backend/Web/TokenAuth.cs); this record only stores/generates the token.
 /// </summary>
 public sealed record Config(string Token, int Port, bool External = false)
 {
@@ -45,10 +46,8 @@ public sealed record Config(string Token, int Port, bool External = false)
         }
         else
         {
-            cfg = new Config(GenerateToken(), DefaultPort, External: false);
-            Save(path, cfg);
-            Console.WriteLine($"[pi-webui] wrote new config to {path} (token printed below once)");
-            Console.WriteLine($"[pi-webui] token: {cfg.Token}");
+            cfg = GenerateAndPersist(path, DefaultPort, external: false,
+                $"[pi-webui] wrote new config to {path} (token printed below once)");
         }
         return cfg;
     }
@@ -76,13 +75,20 @@ public sealed record Config(string Token, int Port, bool External = false)
         if (token is null)
         {
             // config exists but has no token yet -> generate + persist
-            var c = new Config(GenerateToken(), port, external);
-            Save(path, c);
-            Console.WriteLine($"[pi-webui] generated token for existing config {path} (printed once)");
-            Console.WriteLine($"[pi-webui] token: {c.Token}");
-            return c;
+            return GenerateAndPersist(path, port, external,
+                $"[pi-webui] generated token for existing config {path} (printed once)");
         }
         return new Config(token, port, external);
+    }
+
+    /// <summary>Generate, persist, and print a fresh token (shared first-run path).</summary>
+    private static Config GenerateAndPersist(string path, int port, bool external, string firstLine)
+    {
+        var cfg = new Config(GenerateToken(), port, external);
+        Save(path, cfg);
+        Console.WriteLine(firstLine);
+        Console.WriteLine($"[pi-webui] token: {cfg.Token}");
+        return cfg;
     }
 
     private static void Save(string path, Config cfg)

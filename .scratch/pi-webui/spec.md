@@ -55,7 +55,7 @@ than baked into the box image.
 - **Auto-title.** Generated once per new session from the first user message via a tiny non-blocking completion at the box's default model endpoint; fallback to truncated first message.
 - **Frontend is web-native, not a terminal emulator.** TypeScript + a light reactive layer maps RPC events to DOM; no xterm.js in V1.
 - **Packaging.** Own repo, installed on demand into the container (clone into the extensions dir), never forced into the box image. The box image is merely made "ready" (optional port mapping, no entrypoint changes).
-- **Config schema.** Service config holds `{ token, port, defaultModel? }`, container-agnostic, matching the pi-subagents/pi-searxng config.json convention.
+- **Config schema.** Service config persists as `{ token, port, external }`, container-agnostic, matching the pi-subagents/pi-searxng config.json convention (`defaultModel` deferred).
 
 ## Testing Decisions
 
