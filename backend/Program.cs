@@ -84,14 +84,22 @@ app.MapMethods("/api/sessions/{name}/fork", new[] { HttpMethods.Post }, async (H
     return Results.Json(new { text = ExtractDataString(resp, "text") });
 });
 
-// POST /api/sessions/{name}/clone -> { success: bool }
+// POST /api/sessions/{name}/clone -> { success: bool, session: <new stored name> }
+// Clone duplicates the active branch into a NEW session file; the manager registers that
+// file as a stored session so GET /api/sessions lists it and it can be resumed (ticket #06).
 app.MapMethods("/api/sessions/{name}/clone", new[] { HttpMethods.Post }, async (HttpContext ctx, string name) =>
 {
-    var s = sessions.Get(name);
-    if (s is null || !s.IsRunning)
-        return Results.BadRequest(new { error = "session not running" });
-    var resp = await s.CloneAsync(ctx.RequestAborted);
-    return Results.Json(new { success = resp is { Success: true } });
+    try
+    {
+        var newName = await sessions.CloneAndRegisterAsync(name, ctx.RequestAborted);
+        if (newName is null)
+            return Results.BadRequest(new { error = "clone rejected or new session not located" });
+        return Results.Json(new { success = true, session = newName });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 static string? ExtractDataString(PiWebui.Rpc.RpcResponse? resp, string prop)

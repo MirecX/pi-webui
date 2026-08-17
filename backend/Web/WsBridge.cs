@@ -198,7 +198,9 @@ public sealed class WsBridge
                 }
                 break;
             case "clone":
-                await DispatchModelCommandAsync("clone", s => s.CloneAsync()).ConfigureAwait(false);
+                // Clone forks the active branch into a NEW session (rpc.md clone); register the
+                // newly created file as a stored session so it becomes listable + resumable.
+                await HandleCloneAsync().ConfigureAwait(false);
                 break;
 
             case "init":
@@ -255,7 +257,7 @@ public sealed class WsBridge
         {
             title = SessionAutoTitler.Fallback(firstMessage);
         }
-        s.Title = title;
+        _sessions.SetTitle(s.Name, title);
         try
         {
             await _client.SendAsync(JsonSerializer.Serialize(new
@@ -268,6 +270,42 @@ public sealed class WsBridge
         catch
         {
             // best-effort: the client may already be closed
+        }
+    }
+
+    /// <summary>
+    /// Clone the attached session's active branch into a NEW session and register the clone as
+    /// a stored (listable + resumable) session (ticket #06). Surfaces the new session's name to
+    /// the browser as a <c>result</c> frame (target "clone") so the UI refreshes its list; the
+    /// shared dispatch guard for the not-running case keeps the error ladder consistent.
+    /// </summary>
+    private async Task HandleCloneAsync()
+    {
+        var s = _sessions.Get(_sessionName);
+        if (s is null || !s.IsRunning)
+        {
+            await SendErrorAsync($"session '{_sessionName}' is not running; initialize it first").ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var newName = await _sessions.CloneAndRegisterAsync(_sessionName).ConfigureAwait(false);
+            if (newName is null)
+            {
+                await SendErrorAsync("clone rejected or the new session could not be located").ConfigureAwait(false);
+                return;
+            }
+            await SendResultAsync("clone", JsonSerializer.Serialize(new { cloned = true, session = newName }))
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await SendErrorAsync(ex.Message).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            await SendErrorAsync($"clone failed: {ex.Message}").ConfigureAwait(false);
         }
     }
 
