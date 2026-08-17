@@ -1,0 +1,24 @@
+# .NET
+bin/
+obj/
+*.user
+Artifacts/
+
+# Node
+node_modules/
+dist/
+web/dist/
+
+# Runtime
+*.log
+
+# OS
+.DS_Store
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# Local config (contains auth token) — never commit
+config.json
