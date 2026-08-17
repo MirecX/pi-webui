@@ -141,6 +141,28 @@ public sealed class Session : IAsyncDisposable
         => SendCommand(() => new SetThinkingLevelCommand(level), "set_thinking_level", ct);
 
     /// <summary>
+    /// Send a HITL dialog answer back to this session's child as an
+    /// <c>extension_ui_response</c> (ticket #07, rpc.md). Fire-and-forget: pi sends no
+    /// correlated response, so this writes only and never awaits. <c>value</c> answers
+    /// select/input/editor, <c>confirmed</c> answers confirm, <c>cancelled</c> dismisses
+    /// any dialog.
+    /// </summary>
+    public async Task RespondHitlAsync(string requestId, string? value = null, bool? confirmed = null, bool cancelled = false, CancellationToken ct = default)
+    {
+        var client = _client
+            ?? throw new InvalidOperationException($"session '{Name}' is not running; initialize it first");
+        try
+        {
+            await client.SendFireAndForgetAsync(
+                new ExtensionUiResponseCommand(requestId, value, confirmed, cancelled), ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw new InvalidOperationException($"session '{Name}' was recycled; re-initialize it to continue");
+        }
+    }
+
+    /// <summary>
     /// Send a single command to this session's own child and await its correlated
     /// response. Shared by all turn-control methods so their error handling stays
     /// identical to <c>prompt</c> (genuine errors surfaced, expected teardown quiet).

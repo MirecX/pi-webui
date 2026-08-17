@@ -116,6 +116,31 @@ public sealed record GetForkMessagesCommand : RpcCommand
 }
 
 // ---------------------------------------------------------------------------
+// HITL dialogs (ticket #07) — extension_ui_response, wire format per rpc.md
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// Send a dialog answer back to the child for a HITL request (rpc.md
+/// <c>extension_ui_response</c>). Fire-and-forget: pi does NOT send a correlated
+/// response to this command, so it must be written, not awaited. Wire names are
+/// not invented: <c>value</c> for select/input/editor, <c>confirmed</c> for
+/// confirm, <c>cancelled</c> for dismissing any dialog. The <c>id</c> is the
+/// request id from the matching <c>extension_ui_request</c>.
+/// </summary>
+public sealed record ExtensionUiResponseCommand(
+    string RequestId, string? Value = null, bool? Confirmed = null, bool Cancelled = false) : RpcCommand
+{
+    public override string Type => "extension_ui_response";
+    protected override void WriteExtra(Utf8JsonWriter w)
+    {
+        w.WriteString("id", RequestId);
+        if (Value is not null) w.WriteString("value", Value);
+        if (Confirmed is { } c) w.WriteBoolean("confirmed", c);
+        if (Cancelled) w.WriteBoolean("cancelled", true);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Model + thinking switch (ticket #04) — wire format per rpc.md
 // ---------------------------------------------------------------------------
 

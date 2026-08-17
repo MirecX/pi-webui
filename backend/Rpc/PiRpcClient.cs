@@ -74,6 +74,19 @@ public sealed class PiRpcClient : IPiRpcClient
         return await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
     }
 
+    public Task SendFireAndForgetAsync(RpcCommand command, CancellationToken ct = default)
+    {
+        // Fire-and-forget (e.g. extension_ui_response): write only, no pending
+        // correlation, so we never await a response pi will not send.
+        lock (_sendLock)
+        {
+            _stdin!.Write(command.ToJson());
+            _stdin.Write('\n');
+            _stdin.Flush();
+        }
+        return Task.CompletedTask;
+    }
+
     public async ValueTask DisposeAsync()
     {
         try { await StopAsync().ConfigureAwait(false); }

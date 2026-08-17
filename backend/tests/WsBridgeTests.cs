@@ -884,6 +884,194 @@ public class WsBridgeTests
         }
     }
 
+    // --- HITL dialogs (ticket #07) -------------------------------------------
+
+    private const string SelectRaw =
+        "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"Allow?\",\"options\":[\"Allow\",\"Block\"]}";
+    private const string ConfirmRaw =
+        "{\"type\":\"extension_ui_request\",\"id\":\"u2\",\"method\":\"confirm\",\"title\":\"Clear?\",\"message\":\"All lost\"}";
+    private const string InputRaw =
+        "{\"type\":\"extension_ui_request\",\"id\":\"u3\",\"method\":\"input\",\"title\":\"Value\",\"placeholder\":\"type...\"}";
+    private const string EditorRaw =
+        "{\"type\":\"extension_ui_request\",\"id\":\"u4\",\"method\":\"editor\",\"title\":\"Edit\",\"prefill\":\"L1\\nL2\"}";
+    private const string NotifyRaw =
+        "{\"type\":\"extension_ui_request\",\"id\":\"u5\",\"method\":\"notify\",\"message\":\"done\",\"notifyType\":\"warning\"}";
+
+    [Fact]
+    public async Task HITL_dialog_and_notify_events_relay_to_attached_client()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        fake.Emit(RpcEventParser.Parse(SelectRaw));
+        fake.Emit(RpcEventParser.Parse(ConfirmRaw));
+        fake.Emit(RpcEventParser.Parse(InputRaw));
+        fake.Emit(RpcEventParser.Parse(EditorRaw));
+        fake.Emit(RpcEventParser.Parse(NotifyRaw));
+
+        await TestWait.UntilAsync(() => ws.Sent.Count >= 5);
+        // every dialog + notify request surfaces in the browser verbatim
+        Assert.Contains(ws.Sent, s => s.Contains("\"method\":\"select\""));
+        Assert.Contains(ws.Sent, s => s.Contains("\"method\":\"confirm\""));
+        Assert.Contains(ws.Sent, s => s.Contains("\"method\":\"input\""));
+        Assert.Contains(ws.Sent, s => s.Contains("\"method\":\"editor\""));
+        Assert.Contains(ws.Sent, s => s.Contains("\"method\":\"notify\"") && s.Contains("\"warning\""));
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected */ }
+    }
+
+    [Fact]
+    public async Task Hitl_response_select_sends_value_back_to_attached_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u1\",\"value\":\"Allow\"}");
+
+        // rpc.md: extension_ui_response with `value` answers select/input/editor
+        var cmd = Assert.Single(fake.Sent.OfType<ExtensionUiResponseCommand>());
+        Assert.Equal("u1", cmd.RequestId);
+        Assert.Equal("Allow", cmd.Value);
+        Assert.Null(cmd.Confirmed);
+        Assert.False(cmd.Cancelled);
+        // the wire payload matches rpc.md exactly (no invented names)
+        Assert.Equal(
+            "{\"type\":\"extension_ui_response\",\"id\":\"u1\",\"value\":\"Allow\"}",
+            cmd.ToJson());
+    }
+
+    [Fact]
+    public async Task Hitl_response_confirm_sends_confirmed_back_to_attached_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u2\",\"confirmed\":true}");
+        var yes = Assert.Single(fake.Sent.OfType<ExtensionUiResponseCommand>());
+        Assert.Equal("u2", yes.RequestId);
+        Assert.True(yes.Confirmed);
+        Assert.Equal(
+            "{\"type\":\"extension_ui_response\",\"id\":\"u2\",\"confirmed\":true}",
+            yes.ToJson());
+
+        fake.Sent.Clear();
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u2\",\"confirmed\":false}");
+        var no = Assert.Single(fake.Sent.OfType<ExtensionUiResponseCommand>());
+        Assert.False(no.Confirmed);
+        Assert.Equal(
+            "{\"type\":\"extension_ui_response\",\"id\":\"u2\",\"confirmed\":false}",
+            no.ToJson());
+    }
+
+    [Fact]
+    public async Task Hitl_response_cancel_sends_cancelled_back_to_attached_child()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        var fake = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u3\",\"cancelled\":true}");
+
+        var cmd = Assert.Single(fake.Sent.OfType<ExtensionUiResponseCommand>());
+        Assert.Equal("u3", cmd.RequestId);
+        Assert.True(cmd.Cancelled);
+        Assert.Null(cmd.Value);
+        Assert.Null(cmd.Confirmed);
+        Assert.Equal(
+            "{\"type\":\"extension_ui_response\",\"id\":\"u3\",\"cancelled\":true}",
+            cmd.ToJson());
+        // fire-and-forget: nothing relayed back to the browser (no result/error frame)
+        Assert.Empty(ws.Sent);
+    }
+
+    [Fact]
+    public async Task Hitl_response_is_scoped_to_attached_session_only()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.InitAsync("b");
+        var fakeA = h.Clients[0];
+        var fakeB = h.Clients[1];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws); // attached to a
+
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u1\",\"value\":\"Allow\"}");
+
+        // the answer went to a's child only — b's child was never touched (a modal on
+        // session A must not interfere with session B's stream/answers)
+        Assert.Single(fakeA.Sent.OfType<ExtensionUiResponseCommand>());
+        Assert.Empty(fakeB.Sent.OfType<ExtensionUiResponseCommand>());
+    }
+
+    [Fact]
+    public async Task HITL_event_on_one_session_does_not_reach_another_sessions_tab()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.InitAsync("b");
+        var fakeA = h.Clients[0];
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "b", ws); // tab is on B
+        using var cts = new CancellationTokenSource();
+        var fwd = Task.Run(() => bridge.ForwardLoopAsync(cts.Token));
+
+        fakeA.Emit(RpcEventParser.Parse(SelectRaw)); // A's modal fires
+        await Task.Delay(150);
+        Assert.Empty(ws.Sent); // B's tab sees nothing of A's dialog
+
+        cts.Cancel();
+        try { await fwd; } catch (OperationCanceledException) { /* expected */ }
+    }
+
+    [Fact]
+    public async Task Hitl_response_to_recycled_session_reports_error()
+    {
+        using var h = new Harness();
+        await h.Manager.InitAsync("a");
+        await h.Manager.RecycleAsync("a");
+
+        var ws = new FakeWsClient();
+        var bridge = new WsBridge(h.Manager, "a", ws);
+
+        await bridge.HandleMessageAsync("{\"type\":\"hitl_response\",\"id\":\"u1\",\"value\":\"x\"}");
+
+        var err = Assert.Single(ws.Sent);
+        Assert.Contains("\"error\"", err);
+        Assert.Contains("not running", err);
+    }
+
+    [Fact]
+    public async Task ExtensionUiResponseCommand_serializes_exactly_per_rpc()
+    {
+        // rpc.md wire shapes — names are not invented
+        Assert.Equal("{\"type\":\"extension_ui_response\",\"id\":\"u1\",\"value\":\"Allow\"}",
+            new ExtensionUiResponseCommand("u1", Value: "Allow").ToJson());
+        Assert.Equal("{\"type\":\"extension_ui_response\",\"id\":\"u2\",\"confirmed\":true}",
+            new ExtensionUiResponseCommand("u2", Confirmed: true).ToJson());
+        Assert.Equal("{\"type\":\"extension_ui_response\",\"id\":\"u3\",\"cancelled\":true}",
+            new ExtensionUiResponseCommand("u3", Cancelled: true).ToJson());
+    }
+
     [Fact]
     public async Task Rejected_set_model_sends_error_back_to_browser()
     {

@@ -203,6 +203,30 @@ public sealed class WsBridge
                 await HandleCloneAsync().ConfigureAwait(false);
                 break;
 
+            // --- HITL dialogs (ticket #07) ------------------------------------
+            // The browser answers an extension_ui_request (select/confirm/input/editor)
+            // with a `hitl_response` frame; the answer is relayed back to the ATTACHED
+            // session's child as an extension_ui_response. Fire-and-forget: no `result`
+            // frame, but the shared not-running guard + error ladder still apply.
+            case "hitl_response":
+                if (root.TryGetProperty("id", out var ridProp) && ridProp.GetString() is { } requestId)
+                {
+                    string? value = null;
+                    bool? confirmed = null;
+                    bool cancelled = false;
+                    if (root.TryGetProperty("value", out var vProp) && vProp.ValueKind == JsonValueKind.String)
+                        value = vProp.GetString();
+                    if (root.TryGetProperty("confirmed", out var cfProp))
+                    {
+                        if (cfProp.ValueKind == JsonValueKind.True) confirmed = true;
+                        else if (cfProp.ValueKind == JsonValueKind.False) confirmed = false;
+                    }
+                    if (root.TryGetProperty("cancelled", out var cancProp) && cancProp.ValueKind == JsonValueKind.True)
+                        cancelled = true;
+                    await DispatchHitlResponseAsync(requestId, value, confirmed, cancelled).ConfigureAwait(false);
+                }
+                break;
+
             case "init":
             case "recycle":
             case "delete":
@@ -337,6 +361,19 @@ public sealed class WsBridge
     /// </summary>
     private Task DispatchTurnAsync(string action, Func<PiWebui.Session.Session, Task<RpcResponse?>> send)
         => DispatchAsync(action, send, onSuccess: null);
+
+    /// <summary>
+    /// Relay a browser's HITL answer back to the attached session's child as an
+    /// <c>extension_ui_response</c> (rpc.md, ticket #07). Uses the shared dispatcher so
+    /// the not-running guard and error ladder stay consistent; fire-and-forget so no
+    /// <c>result</c> frame is relayed.
+    /// </summary>
+    private Task DispatchHitlResponseAsync(string requestId, string? value, bool? confirmed, bool cancelled)
+        => DispatchAsync("hitl_response",
+            // RespondHitlAsync is fire-and-forget (no RpcResponse); wrap to the shared
+            // dispatcher's send delegate shape with a null result (no result frame).
+            async s => { await s.RespondHitlAsync(requestId, value, confirmed, cancelled).ConfigureAwait(false); return null; },
+            onSuccess: null);
 
     private async Task HandleLifecycleAsync(string type, string name)
     {

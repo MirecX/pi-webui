@@ -32,6 +32,12 @@ internal sealed class FakePiRpcClient : IPiRpcClient
             : _responder(command, ct);
     }
 
+    public Task SendFireAndForgetAsync(RpcCommand command, CancellationToken ct = default)
+    {
+        Sent.Add(command);
+        return Task.CompletedTask;
+    }
+
     public async ValueTask DisposeAsync()
     {
         Disposed = true;

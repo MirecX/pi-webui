@@ -43,6 +43,21 @@ interface ResultFrame extends RpcEvent {
   data?: unknown;
 }
 
+/**
+ * A pi HITL request (rpc.md extension_ui_request) relayed to the browser (ticket #07).
+ * Dialog methods (select/confirm/input/editor) surface as modals; notify is transient.
+ */
+interface HitlRequest {
+  id: string;
+  method: "select" | "confirm" | "input" | "editor" | "notify";
+  title?: string;
+  message?: string;
+  placeholder?: string;
+  prefill?: string;
+  options?: string[];
+  notifyType?: string;
+}
+
 /** A single assistant message being streamed (text + optional thinking). */
 interface ActiveAssistant {
   text: HTMLElement;
@@ -265,6 +280,13 @@ function setup(): void {
   let forkMessages: ForkMessage[] = [];
   let pendingFork = false;
 
+  // --- HITL dialogs (ticket #07) ---------------------------------------------
+  // Pending dialog requests are kept PER SESSION (name -> request), so a modal on one
+  // session never blocks another: switching the active session shows that session's own
+  // pending modal (or none), and answering goes out over the attached session's WS.
+  const pendingModals = new Map<string, HitlRequest>();
+
+
   // --- model + thinking pickers (ticket #04) --------------------------------
   const modelSelect = document.querySelector<HTMLSelectElement>("#model-select")!;
   const thinkingSelect = document.querySelector<HTMLSelectElement>("#thinking-select")!;
@@ -387,6 +409,7 @@ function setup(): void {
     if (!sessions.has(name)) sessions.set(name, { name, status: "running" });
     renderSessions();
     connect();
+    renderHitlModal(); // show this session's own pending modal (or none)
   }
 
   function fallbackAfterActiveDeleted(): void {
@@ -541,6 +564,19 @@ function setup(): void {
       queuedFollow = Array.isArray(q.followUp) ? q.followUp.length : 0;
       renderAgentState();
       return; // queue status only, not a transcript event
+    }
+    if (obj.type === "extension_ui_request") {
+      // HITL (rpc.md): dialogs surface as modals, notify as a transient notice. Neither is
+      // a transcript event; the modal is tracked per-session so one session never blocks
+      // another (the current one shows, the rest stay pending by name).
+      const req = obj as unknown as HitlRequest;
+      if (req.method === "notify") {
+        showNotice(req); // non-modal, non-blocking
+      } else if (active && req.id) {
+        pendingModals.set(active, req);
+        renderHitlModal();
+      }
+      return;
     }
     transcript.handle(obj); // live RPC event
   }
@@ -726,6 +762,85 @@ function setup(): void {
     if (!active) return;
     wsSend({ type: "clone" });
   });
+
+  // --- HITL dialogs (ticket #07) ------------------------------------------
+
+  /** Send the answer for the given request over the ATTACHED session's WS, then clear the modal. */
+  function answerHitl(req: HitlRequest, payload: Record<string, unknown>): void {
+    wsSend({ type: "hitl_response", id: req.id, ...payload });
+    pendingModals.delete(active);
+    document.querySelector(".hitl-overlay")?.remove();
+  }
+
+  /** Transient, non-blocking notice for a notify request (auto-dismisses). */
+  function showNotice(req: HitlRequest): void {
+    const notice = el("div", req.message ?? "notification", `hitl-notice ${req.notifyType ?? "info"}`);
+    notice.append(el("button", "×", "hitl-notice-close"));
+    notice.querySelector(".hitl-notice-close")!.addEventListener("click", () => notice.remove());
+    document.body.append(notice);
+    setTimeout(() => notice.remove(), 5000);
+  }
+
+  /** Render the active session's pending HITL dialog as a modal, or nothing. */
+  function renderHitlModal(): void {
+    const old = document.querySelector<HTMLElement>(".hitl-overlay");
+    if (old) old.remove();
+    const req = active ? pendingModals.get(active) : undefined;
+    if (!req) return;
+
+    const overlay = el("div", undefined, "hitl-overlay");
+    const box = el("div", undefined, `hitl-box ${req.method}`);
+    box.append(el("div", req.title ?? "Question from agent", "hitl-title"));
+    if (req.message) box.append(el("div", req.message, "hitl-message"));
+
+    const cancel = el("button", "Cancel", "btn");
+    cancel.addEventListener("click", () => answerHitl(req, { cancelled: true }));
+
+    if (req.method === "confirm") {
+      // confirm = Yes / No (rpc.md: extension_ui_response confirmed:true/false)
+      const actions = el("div", undefined, "hitl-actions");
+      const yes = el("button", "Yes", "btn primary");
+      const no = el("button", "No", "btn");
+      yes.addEventListener("click", () => answerHitl(req, { confirmed: true }));
+      no.addEventListener("click", () => answerHitl(req, { confirmed: false }));
+      actions.append(yes, no, cancel);
+      box.append(actions);
+    } else if (req.method === "select") {
+      // select = list of options (rpc.md: value = the chosen option string)
+      const select = el("select", undefined, "hitl-select") as HTMLSelectElement;
+      const options = req.options?.length ? req.options : [];
+      if (!options.length) select.append(el("option", "(no options)"));
+      for (const o of options) select.append(el("option", o) as HTMLOptionElement);
+      const actions = el("div", undefined, "hitl-actions");
+      const ok = el("button", "OK", "btn primary");
+      ok.addEventListener("click", () => answerHitl(req, { value: select.value }));
+      actions.append(cancel, ok);
+      box.append(el("label", "Select an option", "hitl-label"), select, actions);
+    } else {
+      // input = single text field; editor = larger text area (rpc.md: value = text)
+      const field =
+        req.method === "editor"
+          ? el("textarea", req.prefill ?? "", "hitl-textarea")
+          : (el("input", undefined, "hitl-input") as HTMLInputElement);
+      if (req.method === "input") {
+        const inp = field as HTMLInputElement;
+        if (req.placeholder) inp.placeholder = req.placeholder;
+      }
+      const actions = el("div", undefined, "hitl-actions");
+      const ok = el("button", "OK", "btn primary");
+      ok.addEventListener("click", () =>
+        answerHitl(req, {
+          value: field instanceof HTMLTextAreaElement ? field.value : (field as HTMLInputElement).value,
+        }),
+      );
+      box.append(field, actions);
+      actions.append(cancel, ok);
+    }
+
+    overlay.append(box);
+    document.body.append(overlay);
+    (overlay.querySelector("input, select, textarea") as HTMLElement | null)?.focus();
+  }
 
   /**
    * Light picker over the fork messages (get_fork_messages) so the user chooses which

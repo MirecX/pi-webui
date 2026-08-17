@@ -14,4 +14,11 @@ public interface IPiRpcClient : IAsyncDisposable
 
     /// <summary>Send a command and await its correlated response (null if none).</summary>
     Task<RpcResponse?> SendAsync(RpcCommand command, CancellationToken ct = default);
+
+    /// <summary>
+    /// Send a fire-and-forget command that expects NO correlated response (e.g. the
+    /// HITL <c>extension_ui_response</c>). Writes to the child's stdin without
+    /// registering a pending correlation, so it never hangs waiting on a reply.
+    /// </summary>
+    Task SendFireAndForgetAsync(RpcCommand command, CancellationToken ct = default);
 }
