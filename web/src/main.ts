@@ -621,9 +621,11 @@ function setup(): void {
 
   function renderSessions(): void {
     sessionListEl.textContent = "";
-    const names = [...sessions.keys()].sort();
-    for (const name of names) {
-      const info = sessions.get(name);
+    // Iterate the map in insertion order, which refreshSessions seeds from the server's
+    // newest-first order (don't re-sort by name — that would undo it). WS lifecycle events
+    // append newer sessions at the end, which is consistent.
+    for (const info of sessions.values()) {
+      const name = info.name;
       const st = info?.status ?? "";
       const item = el("li", undefined, "session-item");
       if (name === active) item.classList.add("active");
