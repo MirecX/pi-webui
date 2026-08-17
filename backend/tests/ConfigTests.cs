@@ -59,4 +59,34 @@ public class ConfigTests : IDisposable
         Assert.Equal(8000, cfg.Port);
         Assert.Equal(64, cfg.Token.Length);
     }
+
+    [Fact]
+    public void Default_binds_localhost_only()
+    {
+        var cfg = new Config("t", Config.DefaultPort);
+        Assert.False(cfg.External);
+        Assert.Equal("127.0.0.1", cfg.BindHost);
+    }
+
+    [Fact]
+    public void External_opt_in_binds_all_interfaces()
+    {
+        var cfg = new Config("t", Config.DefaultPort, External: true);
+        Assert.True(cfg.External);
+        Assert.Equal("0.0.0.0", cfg.BindHost);
+    }
+
+    [Fact]
+    public void Reads_and_persists_external_flag()
+    {
+        var path = PathFor("config.json");
+        var cfg = Config.Load(path); // first run: default localhost
+        Assert.False(cfg.External);
+
+        // user opts in by editing the file
+        File.WriteAllText(path, "{\"token\":\"abc\",\"port\":8456,\"external\":true}\n");
+        var reloaded = Config.Load(path);
+        Assert.True(reloaded.External);
+        Assert.Equal("0.0.0.0", reloaded.BindHost);
+    }
 }

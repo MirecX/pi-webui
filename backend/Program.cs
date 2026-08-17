@@ -24,8 +24,11 @@ Console.WriteLine($"[pi-webui] spawned pi --mode rpc (cwd: {cwd})");
 
 // --- ASP.NET host ----------------------------------------------------------
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls($"http://0.0.0.0:{config.Port}");
+builder.WebHost.UseUrls($"http://{config.BindHost}:{config.Port}");
 var app = builder.Build();
+
+// Gate every HTTP request and WS handshake behind the config token (ticket #02).
+app.UseMiddleware<TokenAuthMiddleware>(config.Token);
 
 app.UseWebSockets();
 app.Map("/ws", async (HttpContext ctx) =>
@@ -53,7 +56,7 @@ else
 
 // The full token is echoed only on first-run generation (see Config.Load); it is
 // intentionally not re-printed on every startup.
-Console.WriteLine($"[pi-webui] up.  ws=ws://localhost:{config.Port}/ws  ui=http://localhost:{config.Port}/");
+Console.WriteLine($"[pi-webui] up.  ws=ws://localhost:{config.Port}/ws  ui=http://localhost:{config.Port}/  bind={config.BindHost}  external-opt-in={config.External}");
 await app.RunAsync();
 
 /// Helper for resolving the built-frontend directory.

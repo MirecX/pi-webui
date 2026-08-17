@@ -198,6 +198,13 @@ class Transcript {
   }
 }
 
+function readToken(): string {
+  const q = new URLSearchParams(location.search).get("token");
+  if (q) return q;
+  const m = document.cookie.match(/(?:^|; )token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 function setup(): void {
   const app = document.querySelector<HTMLElement>("#app")!;
   const transcript = new Transcript(document.querySelector<HTMLElement>("#transcript")!);
@@ -234,7 +241,11 @@ function setup(): void {
 
   // --- WebSocket ----------------------------------------------------------
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${proto}//${location.host}/ws`;
+  // Ticket #02: the service gate-keeps every request behind the config token. Take
+  // it from the page URL (http://host:port/?token=…) or the cookie the server set
+  // after that first authenticated hit, and send it on the WS handshake.
+  const token = readToken();
+  const wsUrl = `${proto}//${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
   let ws: WebSocket | null = null;
 
   function wsSend(obj: unknown): void {

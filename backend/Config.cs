@@ -11,9 +11,16 @@ namespace PiWebui;
 /// The token is auto-generated + printed once on first run. Auth enforcement is
 /// ticket #02; here we only store/generate it.
 /// </summary>
-public sealed record Config(string Token, int Port)
+public sealed record Config(string Token, int Port, bool External = false)
 {
     public const int DefaultPort = 8456;
+
+    /// <summary>
+    /// Host the listener binds. Safe by default: 127.0.0.1 (localhost) unless the
+    /// config explicitly opts into the external interface (0.0.0.0) so the
+    /// container's external port mapping (HOST_PORT + 10000) becomes reachable.
+    /// </summary>
+    public string BindHost => External ? "0.0.0.0" : "127.0.0.1";
 
     /// <summary>Primary config path under the user's home (extension dir).</summary>
     public static string HomeConfigPath =>
@@ -38,7 +45,7 @@ public sealed record Config(string Token, int Port)
         }
         else
         {
-            cfg = new Config(GenerateToken(), DefaultPort);
+            cfg = new Config(GenerateToken(), DefaultPort, External: false);
             Save(path, cfg);
             Console.WriteLine($"[pi-webui] wrote new config to {path} (token printed below once)");
             Console.WriteLine($"[pi-webui] token: {cfg.Token}");
@@ -65,16 +72,17 @@ public sealed record Config(string Token, int Port)
         var root = doc.RootElement;
         var token = GetString(root, "token");
         var port = GetInt(root, "port") ?? DefaultPort;
+        var external = GetBool(root, "external") ?? false;
         if (token is null)
         {
             // config exists but has no token yet -> generate + persist
-            var c = new Config(GenerateToken(), port);
+            var c = new Config(GenerateToken(), port, external);
             Save(path, c);
             Console.WriteLine($"[pi-webui] generated token for existing config {path} (printed once)");
             Console.WriteLine($"[pi-webui] token: {c.Token}");
             return c;
         }
-        return new Config(token, port);
+        return new Config(token, port, external);
     }
 
     private static void Save(string path, Config cfg)
@@ -82,7 +90,7 @@ public sealed record Config(string Token, int Port)
         var dir = Path.GetDirectoryName(path);
         if (dir is not null && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
         File.WriteAllText(path,
-            JsonSerializer.Serialize(new { token = cfg.Token, port = cfg.Port },
+            JsonSerializer.Serialize(new { token = cfg.Token, port = cfg.Port, external = cfg.External },
                 new JsonSerializerOptions { WriteIndented = true }) + "\n");
     }
 

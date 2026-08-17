@@ -17,6 +17,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- ASP.NET Core shared framework: DefaultHttpContext et al. for boundary tests -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\PiWebui.csproj" />
   </ItemGroup>
 
