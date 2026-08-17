@@ -314,19 +314,19 @@ function setup(): void {
     active = "";
     const names = [...sessions.keys()].sort();
     if (names.length) selectSession(names[0]);
-    else bootstrapDefault();
+    else showEmptyState();
   }
 
-  async function bootstrapDefault(): Promise<void> {
-    const name = "default";
-    try {
-      await createSession(name);
-      active = name;
-      renderSessions();
-      connect();
-    } catch {
-      status.set("failed to reach server");
-    }
+  /**
+   * Empty state: sessions are created ONLY on explicit user init — never implicitly
+   * on connect/boot. So when nothing exists we just prompt the user to create one.
+   */
+  function showEmptyState(): void {
+    active = "";
+    status.set("no sessions — create one to begin");
+    sessionListEl.textContent = "";
+    renderSessions(); // resets the active label + disables lifecycle controls
+    sessionListEl.append(el("li", "No sessions yet. Click “+ New” to create one.", "empty-hint"));
   }
 
   function handleFrame(obj: RpcEvent): void {
@@ -428,7 +428,7 @@ function setup(): void {
       status.set("failed to load sessions");
       return;
     }
-    if (sessions.size === 0) await bootstrapDefault();
+    if (sessions.size === 0) showEmptyState();
     else selectSession([...sessions.keys()].sort()[0]);
   })();
 }

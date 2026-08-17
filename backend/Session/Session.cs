@@ -70,11 +70,21 @@ public sealed class Session : IAsyncDisposable
     private void OnEvent(RpcEvent ev) => _events.Publish(ev);
 
     /// <summary>Send a prompt to this session's own child and await its acceptance response.</summary>
-    public Task<RpcResponse?> PromptAsync(string message, CancellationToken ct = default)
+    public async Task<RpcResponse?> PromptAsync(string message, CancellationToken ct = default)
     {
         var client = _client
             ?? throw new InvalidOperationException($"session '{Name}' is not running; initialize it first");
-        return client.SendAsync(new PromptCommand(message), ct);
+        try
+        {
+            return await client.SendAsync(new PromptCommand(message), ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The child was disposed mid-write (a recycle raced this prompt). Surface it
+            // as an ordinary not-running error instead of letting it tear down the WS loop.
+            throw new InvalidOperationException(
+                $"session '{Name}' was recycled mid-prompt; re-initialize it to continue");
+        }
     }
 
     /// <summary>Stop the child (recycle). Preserves history; the session stays resumable.</summary>

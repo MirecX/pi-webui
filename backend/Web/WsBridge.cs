@@ -165,18 +165,27 @@ public sealed class WsBridge
 
     private async Task SendSessionEventAsync(string action, string name)
     {
-        var s = _sessions.Get(name);
-        string status = s?.Status switch
+        try
         {
-            SessionStatus.Running => "running",
-            _ => s is null ? "deleted" : "recycled",
-        };
-        await _client.SendAsync(JsonSerializer.Serialize(new
+            var s = _sessions.Get(name);
+            string status = s?.Status switch
+            {
+                SessionStatus.Running => "running",
+                _ => s is null ? "deleted" : "recycled",
+            };
+            await _client.SendAsync(JsonSerializer.Serialize(new
+            {
+                type = "session_event",
+                action,
+                session = new { name, status },
+            }), default).ConfigureAwait(false);
+        }
+        catch
         {
-            type = "session_event",
-            action,
-            session = new { name, status },
-        }), default).ConfigureAwait(false);
+            // Best-effort: the client may already be closed (e.g. deleting the session
+            // we're attached to closed the connection first). Never throw out of the
+            // inbound handler.
+        }
     }
 
     private async Task SendErrorAsync(string message) =>
@@ -203,6 +212,7 @@ public sealed class WsBridge
             if (msg is null) break; // client closed
             try { await HandleMessageAsync(msg).ConfigureAwait(false); }
             catch (JsonException) { /* ignore malformed client frames */ }
+            catch { /* swallow transient frame errors (e.g. a prompt racing a recycle) so a single bad message never kills the connection */ }
         }
     }
 }

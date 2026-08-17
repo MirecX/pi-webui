@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using PiWebui.Rpc;
 using PiWebui.Session;
@@ -210,6 +211,90 @@ public class SessionManagerTests
         Assert.Single(h.Clients);
         Assert.False(first.Disposed);
         Assert.Equal("a", again.Name);
+    }
+
+    [Fact]
+    public async Task Init_failure_rolls_back_registration_and_child()
+    {
+        var clients = new List<FakePiRpcClient>();
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-fail-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() =>
+            {
+                // 1st spawn fails init (child explodes); a retry gets a healthy client.
+                var n = clients.Count;
+                var c = new FakePiRpcClient(n == 0
+                    ? cmd => throw new InvalidOperationException("child exploded")
+                    : cmd => new RpcResponse("ok", cmd.Type, true, null, null));
+                clients.Add(c);
+                return c;
+            }, dir);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => mgr.InitAsync("a"));
+
+            // a failed init is never reported as running and never lingers in the registry
+            Assert.Null(mgr.Get("a"));
+            Assert.Empty(mgr.List());
+            Assert.True(clients[0].Disposed); // the failed child was cleaned up
+
+            // a retry can create a fresh session from scratch
+            var again = await mgr.InitAsync("a");
+            Assert.True(again.IsRunning);
+            Assert.Same(again, mgr.Get("a"));
+            Assert.Equal(2, clients.Count); // fresh child, no stale state
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Resume_reuses_discovered_history_path_from_get_state()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-disc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var discovered = Path.Combine(dir, "discovered", "session.jsonl");
+        Directory.CreateDirectory(Path.GetDirectoryName(discovered)!);
+        var clients = new List<FakePiRpcClient>();
+        try
+        {
+            // get_state reports a child-owned sessionFile (discovered, NOT the managed path)
+            Func<RpcCommand, RpcResponse?> responder = cmd =>
+                cmd is GetStateCommand
+                    ? new RpcResponse("gs", "get_state", true, null,
+                        JsonDocument.Parse($"{{\"sessionFile\":\"{discovered.Replace("\\", "/")}\"}}").RootElement)
+                    : null;
+
+            await using var mgr = new SessionManager(() =>
+            {
+                var c = new FakePiRpcClient(responder);
+                clients.Add(c);
+                return c;
+            }, dir);
+
+            var session = await mgr.InitAsync("a");
+            // history path came from get_state (discovered), not the managed a.jsonl
+            Assert.Equal(discovered, session.HistoryFilePath);
+            var child1 = clients[0];
+
+            File.WriteAllText(discovered, "{}\n"); // child produced history on that path
+            await mgr.RecycleAsync("a");
+            Assert.True(child1.Disposed);
+
+            var resumed = await mgr.InitAsync("a"); // resume via the DISCOVERED path
+            Assert.Same(session, resumed);
+            Assert.Equal(2, clients.Count);
+            var child2 = clients[1];
+            var sw = Assert.Single(child2.Sent.OfType<SwitchSessionCommand>());
+            Assert.Equal(discovered, sw.SessionPath);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]

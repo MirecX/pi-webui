@@ -151,6 +151,40 @@ public class WsBridgeTests
     }
 
     [Fact]
+    public async Task Prompt_after_disposed_child_does_not_crash_inbound_loop()
+    {
+        // Simulates a prompt racing a recycle: the child was disposed mid-write and
+        // throws ObjectDisposedException, which must NOT tear down the WS connection.
+        var disposed = new FakePiRpcClient(cmd =>
+            cmd is PromptCommand
+                ? throw new ObjectDisposedException("stdin")
+                : new RpcResponse("ok", cmd.Type, true, null, null));
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => disposed, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            ws.EnqueueInbound(PromptJson);
+            ws.CompleteInbound(); // inbound loop exits after the single message
+
+            var bridge = new WsBridge(mgr, "a", ws);
+            // must NOT throw out of the inbound loop: RunAsync completes cleanly
+            await bridge.RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(ws.Closed);
+            // the dispose race surfaced as a normal error to the browser, not a crash
+            Assert.Contains(ws.Sent, s => s.Contains("\"error\""));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Inbound_loop_dispatches_prompt_from_browser()
     {
         using var h = new Harness();

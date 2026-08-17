@@ -100,47 +100,71 @@ public sealed class SessionManager : IAsyncDisposable
 
     // --- internals -----------------------------------------------------------
 
-    /// <summary>Brand-new session: spawn a fresh child and learn its history file path.</summary>
+    /// <summary>
+    /// Brand-new session: spawn a fresh child and learn its history file path. On any
+    /// failure the half-initialized registration from <see cref="InitAsync"/> is
+    /// rolled back so a failed init is never reported as running and a retry can
+    /// create a fresh session instead.
+    /// </summary>
     private async Task InitializeAsync(Session s, CancellationToken ct)
     {
-        var managedPath = HistoryPathFor(s.Name);
-        var client = _clientFactory();
-        s.AttachClient(client);
-        client.Start();
-
-        if (IsNonEmptyFile(managedPath))
+        try
         {
-            // A stored session file already exists (e.g. across a server restart):
-            // point the fresh child at it so history is resumed.
-            s.HistoryFilePath = managedPath;
-            await client.SendAsync(new SwitchSessionCommand(managedPath), ct).ConfigureAwait(false);
+            await StartChildAsync(s, HistoryPathFor(s.Name), ct).ConfigureAwait(false);
         }
-        else
+        catch
         {
-            // Brand-new: discover the child's session file so recycle/delete can
-            // preserve/remove the right path; fall back to the managed path.
-            var resp = await client.SendAsync(new GetStateCommand(), ct).ConfigureAwait(false);
-            s.HistoryFilePath = ExtractSessionFile(resp) ?? managedPath;
+            // Remove the registration added in InitAsync (the failed child was already
+            // detached/disposed by StartChildAsync). A subsequent init starts fresh.
+            _sessions.TryRemove(s.Name, out _);
+            throw;
         }
     }
 
     /// <summary>Resume a recycled session: spawn a fresh child pointed at its history file.</summary>
     private async Task ResumeAsync(Session s, CancellationToken ct)
     {
+        await StartChildAsync(s, s.HistoryFilePath, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Shared init/resume core: spawn a fresh child for the session and point it at
+    /// (or discover) the history file. If <paramref name="candidatePath"/> resolves to
+    /// a non-empty file the fresh child resumes it via <c>switch_session</c>; otherwise
+    /// the child's own <c>get_state</c> sessionFile is discovered (falling back to the
+    /// candidate path). On any failure the freshly attached child is detached and
+    /// disposed so a failed start/command never leaves a half-attached running session.
+    /// </summary>
+    private async Task StartChildAsync(Session s, string? candidatePath, CancellationToken ct)
+    {
         var client = _clientFactory();
         s.AttachClient(client);
-        client.Start();
+        try
+        {
+            client.Start();
 
-        var history = s.HistoryFilePath;
-        if (history is not null && IsNonEmptyFile(history))
-        {
-            await client.SendAsync(new SwitchSessionCommand(history), ct).ConfigureAwait(false);
+            if (candidatePath is not null && IsNonEmptyFile(candidatePath))
+            {
+                // A preserved history file exists (e.g. across a server restart, or a
+                // previously recycled session): point the fresh child at it so history
+                // is resumed.
+                s.HistoryFilePath = candidatePath;
+                await client.SendAsync(new SwitchSessionCommand(candidatePath), ct).ConfigureAwait(false);
+            }
+            else
+            {
+                // No preserved file: discover the child's session file so recycle/delete
+                // can preserve/remove the right path; fall back to the candidate path.
+                var resp = await client.SendAsync(new GetStateCommand(), ct).ConfigureAwait(false);
+                s.HistoryFilePath = ExtractSessionFile(resp) ?? candidatePath;
+            }
         }
-        else
+        catch
         {
-            // no preserved file (shouldn't normally happen for a recycled session)
-            var resp = await client.SendAsync(new GetStateCommand(), ct).ConfigureAwait(false);
-            s.HistoryFilePath = ExtractSessionFile(resp) ?? history;
+            // Detach + dispose the freshly attached child (best-effort) so a failed
+            // start/command doesn't leave a dead child bound to this session.
+            await s.RecycleAsync().ConfigureAwait(false);
+            throw;
         }
     }
 
