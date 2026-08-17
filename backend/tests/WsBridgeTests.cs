@@ -297,14 +297,84 @@ public class WsBridgeTests
         using var h = new Harness();
         await h.Manager.InitAsync("a");
 
-        var ws = new FakeWsClient();
+        // DropSendsAfterClose mirrors the real transport: frames sent AFTER the client is
+        // closed are lost. This guards the ordering so the "deleted" session_event is
+        // delivered on the still-open channel before the connection closes — otherwise the
+        // browser would never learn the session is gone and would keep reconnecting.
+        var ws = new FakeWsClient(dropSendsAfterClose: true);
         var bridge = new WsBridge(h.Manager, "a", ws);
 
         await bridge.HandleMessageAsync("{\"type\":\"delete\"}");
 
         Assert.Null(h.Manager.Get("a"));
         Assert.True(ws.Closed); // the tab's session is gone -> connection closed
+        // the "deleted" event must have been emitted while the channel was still open
         Assert.Contains(ws.Sent, s => s.Contains("\"deleted\""));
+    }
+
+    [Fact]
+    public async Task Genuine_prompt_failure_with_live_session_sends_error_to_browser()
+    {
+        // The child's pending prompt is cancelled (like a killed child) while the session is
+        // still registered as running: this is a genuine per-command failure and the browser
+        // must see an error frame, not a silent drop.
+        var cancelled = new FakePiRpcClient((cmd, ct) =>
+            cmd is PromptCommand
+                ? Task.FromCanceled<RpcResponse?>(new CancellationToken(canceled: true))
+                : Task.FromResult<RpcResponse?>(null));
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-lost-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => cancelled, dir);
+            await mgr.InitAsync("a");
+            Assert.True(mgr.Get("a")!.IsRunning); // no recycle — session is still live
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            await bridge.HandleMessageAsync(PromptJson);
+
+            Assert.Contains(ws.Sent, s => s.Contains("\"error\""));
+            Assert.Contains(ws.Sent, s => s.Contains("cancelled"));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Prompt_cancelled_by_recycle_is_not_reported_as_error()
+    {
+        // When a prompt is cancelled because the session was explicitly recycled (expected
+        // teardown), no error should be pushed — the recycle lifecycle event already covers it.
+        var pending = new TaskCompletionSource<RpcResponse?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakePiRpcClient((cmd, ct) =>
+            cmd is PromptCommand ? pending.Task : Task.FromResult<RpcResponse?>(null));
+        var dir = Path.Combine(Path.GetTempPath(), $"piwebui-teardown-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var mgr = new SessionManager(() => fake, dir);
+            await mgr.InitAsync("a");
+
+            var ws = new FakeWsClient();
+            var bridge = new WsBridge(mgr, "a", ws);
+
+            var pendingPrompt = bridge.HandleMessageAsync(PromptJson);
+            // recycle the session while the prompt is pending -> detaches the child, so the
+            // awaiting prompt is cancelled against a now-stopped (expected-teardown) session.
+            await mgr.RecycleAsync("a");
+            pending.SetCanceled();
+            await pendingPrompt;
+
+            Assert.DoesNotContain(ws.Sent, s => s.Contains("\"error\""));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]

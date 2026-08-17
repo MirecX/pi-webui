@@ -138,6 +138,21 @@ public sealed class WsBridge
         {
             await SendErrorAsync(ex.Message).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            // A pending prompt was cancelled. If the session is STILL live this is a
+            // genuine per-command failure (e.g. the child was killed mid-prompt) and the
+            // browser must hear about it rather than have it silently dropped. If the
+            // session is no longer running the prompt was cancelled by an explicit
+            // recycle/delete teardown, which the lifecycle event already covers.
+            if (s.IsRunning)
+                await SendErrorAsync("prompt cancelled; the session stopped before it could respond").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Any other genuine per-command failure: surface it instead of dropping it.
+            await SendErrorAsync($"prompt failed: {ex.Message}").ConfigureAwait(false);
+        }
     }
 
     private async Task HandleLifecycleAsync(string type, string name)
@@ -153,14 +168,18 @@ public sealed class WsBridge
                 break;
             case "delete":
                 await _sessions.DeleteAsync(name).ConfigureAwait(false);
-                if (name == _sessionName)
-                {
-                    // we deleted the session we're attached to -> close the tab connection
-                    await _client.CloseAsync().ConfigureAwait(false);
-                }
                 break;
         }
         await SendSessionEventAsync(type, name).ConfigureAwait(false);
+        if (type == "delete" && name == _sessionName)
+        {
+            // We deleted the session we're attached to. Deliver the "deleted"
+            // session_event FIRST on the still-open channel so the browser learns the
+            // session is gone and stops reconnecting, THEN close the tab connection.
+            // Closing first would drop the frame on the real transport (sends after
+            // close are lost) and leave the frontend looping on the dead session.
+            await _client.CloseAsync().ConfigureAwait(false);
+        }
     }
 
     private async Task SendSessionEventAsync(string action, string name)
@@ -212,7 +231,15 @@ public sealed class WsBridge
             if (msg is null) break; // client closed
             try { await HandleMessageAsync(msg).ConfigureAwait(false); }
             catch (JsonException) { /* ignore malformed client frames */ }
-            catch { /* swallow transient frame errors (e.g. a prompt racing a recycle) so a single bad message never kills the connection */ }
+            catch (OperationCanceledException) { break; } // transport/loop teardown
+            catch (Exception ex)
+            {
+                // A genuine per-command failure escaped the command handlers: surface it to
+                // the browser instead of silently dropping it (best-effort send). Only the
+                // transport-failure teardown above should exit the loop.
+                try { await SendErrorAsync($"command failed: {ex.Message}").ConfigureAwait(false); }
+                catch { /* best-effort */ }
+            }
         }
     }
 }

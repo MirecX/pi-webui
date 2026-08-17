@@ -44,13 +44,22 @@ internal sealed class FakeWsClient : IWsClient
 {
     public List<string> Sent { get; } = new();
     private readonly Channel<string> _inbound = Channel.CreateUnbounded<string>();
+    private readonly bool _dropSendsAfterClose;
     public bool Closed { get; private set; }
+
+    /// <summary>
+    /// When <paramref name="dropSendsAfterClose"/> is set, sends after <see cref="CloseAsync"/>
+    /// are dropped (not recorded) — mirroring the real AspNetWsClient whose frames are lost
+    /// once the connection is closed. Used to guard the delete-event ordering regression.
+    /// </summary>
+    public FakeWsClient(bool dropSendsAfterClose = false) => _dropSendsAfterClose = dropSendsAfterClose;
 
     public void EnqueueInbound(string json) => _inbound.Writer.TryWrite(json);
     public void CompleteInbound() => _inbound.Writer.TryComplete();
 
     public Task SendAsync(string text, CancellationToken ct = default)
     {
+        if (_dropSendsAfterClose && Closed) return Task.CompletedTask; // frame dropped after close
         lock (Sent) Sent.Add(text);
         return Task.CompletedTask;
     }

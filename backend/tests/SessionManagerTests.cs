@@ -200,6 +200,24 @@ public class SessionManagerTests
     }
 
     [Fact]
+    public async Task Concurrent_init_on_same_new_name_spawns_only_one_child()
+    {
+        using var h = new Harness();
+
+        // Two simultaneous inits on a brand-new name must serialize so exactly ONE child
+        // is spawned and both callers observe the same single session.
+        var t1 = h.Manager.InitAsync("a");
+        var t2 = h.Manager.InitAsync("a");
+        var s1 = await t1;
+        var s2 = await t2;
+
+        Assert.Same(s1, s2);
+        Assert.Single(h.Clients);       // exactly one child, never two
+        Assert.True(s1.IsRunning);
+        Assert.Same(h.Manager.Get("a"), s1);
+    }
+
+    [Fact]
     public async Task Init_is_idempotent_for_a_running_session()
     {
         using var h = new Harness();

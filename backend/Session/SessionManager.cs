@@ -27,6 +27,14 @@ public sealed class SessionManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Session> _sessions =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Per-name single-flight gates so two simultaneous <see cref="InitAsync"/> calls on
+    /// the same brand-new name cannot both spawn a child: exactly one child is ever
+    /// created per session, and concurrent init on the same name is serialized.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _initGates =
+        new(StringComparer.Ordinal);
+
     private readonly Func<IPiRpcClient> _clientFactory;
     private readonly string _sessionsDir;
 
@@ -51,27 +59,38 @@ public sealed class SessionManager : IAsyncDisposable
     /// </summary>
     public async Task<Session> InitAsync(string name, CancellationToken ct = default)
     {
-        var existing = Get(name);
-        if (existing is not null)
+        // Serialize create/resume for this name so concurrent init on the same name never
+        // spawns more than one child. Different names run in parallel (per-session gates).
+        var gate = _initGates.GetOrAdd(name, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            if (existing.IsRunning) return existing; // already running
-            await ResumeAsync(existing, ct).ConfigureAwait(false);
-            return existing;
-        }
+            var existing = Get(name);
+            if (existing is not null)
+            {
+                if (existing.IsRunning) return existing; // already running
+                await ResumeAsync(existing, ct).ConfigureAwait(false);
+                return existing;
+            }
 
-        // Register under a lock to avoid double-create racing on the same name.
-        var session = new Session(name);
-        var actual = _sessions.GetOrAdd(name, session);
-        if (!ReferenceEquals(actual, session))
-        {
-            // lost the create race: an equivalent session already exists
-            if (actual.IsRunning) return actual;
-            await ResumeAsync(actual, ct).ConfigureAwait(false);
+            // Register; the gate above guarantees this name has no in-flight creator, so
+            // GetOrAdd always wins and only one child is ever spawned.
+            var session = new Session(name);
+            var actual = _sessions.GetOrAdd(name, session);
+            if (!ReferenceEquals(actual, session))
+            {
+                if (actual.IsRunning) return actual;
+                await ResumeAsync(actual, ct).ConfigureAwait(false);
+                return actual;
+            }
+
+            await InitializeAsync(actual, ct).ConfigureAwait(false);
             return actual;
         }
-
-        await InitializeAsync(actual, ct).ConfigureAwait(false);
-        return actual;
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>Stop the child but keep the history file; the session stays resumable.</summary>
