@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # pi-webui installer — clone, build, configure and start the pi-webui web service on demand.
 #
-#   curl -fsSL https://pi.dev/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/MirecX/pi-webui/master/install.sh | sh
+#   (pi.dev/install.sh is a future short alias)
 #
 # Works in a yolobox container or any box with pi + .NET SDK + Node. Installs like
 # pi-subagents (a repo under ~/.pi/agent/extensions/) but is NOT part of the image.
