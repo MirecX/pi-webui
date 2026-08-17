@@ -23,3 +23,8 @@ web/dist/
 
 # Local config (contains auth token) — never commit
 config.json
+
+# agent/pi artifacts (can be created when pi runs in this repo dir)
+.pi-history/
+backend/.pi-history/
+backend/hello/
