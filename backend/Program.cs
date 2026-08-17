@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Text.Json;
 using PiWebui;
 using PiWebui.Rpc;
 using PiWebui.Session;
@@ -9,7 +10,10 @@ var explicitConfig = Environment.GetEnvironmentVariable("PIE_CONFIG");
 var config = Config.Load(explicitConfig);
 Console.WriteLine($"[pi-webui] listening on port {config.Port}");
 
-// --- Session: ONE default session for ticket #01 ---------------------------
+// --- Session registry: N named sessions (ticket #05) -----------------------
+// Each session owns its own pi --mode rpc child; sessions are created on demand
+// via init (never implicitly on connect). The client factory is invoked once per
+// (re)init so each session gets its own isolated child.
 var cwd = Environment.GetEnvironmentVariable("PIE_CWD")
           ?? (Directory.Exists("/workspace") ? "/workspace" : Directory.GetCurrentDirectory());
 var piOptions = new PiClientOptions
@@ -18,9 +22,9 @@ var piOptions = new PiClientOptions
     Arguments = new[] { "--mode", "rpc" },
     WorkingDirectory = cwd,
 };
-await using var session = new SessionManager(new PiRpcClient(piOptions));
-session.Start();
-Console.WriteLine($"[pi-webui] spawned pi --mode rpc (cwd: {cwd})");
+var sessionsDir = Environment.GetEnvironmentVariable("PIE_SESSIONS_DIR");
+await using var sessions = new SessionManager(() => new PiRpcClient(piOptions), sessionsDir);
+Console.WriteLine($"[pi-webui] session registry ready (cwd: {cwd}, sessions-dir: {sessionsDir ?? "<default>"})");
 
 // --- ASP.NET host ----------------------------------------------------------
 var builder = WebApplication.CreateBuilder(args);
@@ -29,6 +33,35 @@ var app = builder.Build();
 
 // Gate every HTTP request and WS handshake behind the config token (ticket #02).
 app.UseMiddleware<TokenAuthMiddleware>(config.Token);
+
+// Lifecycle + listing (ticket #05). Actions are on-demand only;
+// init is the only way a session is created.
+object ToDto(PiWebui.Session.Session s) => new { name = s.Name, status = s.Status.ToString().ToLowerInvariant() };
+
+app.MapGet("/api/sessions", () => Results.Json(sessions.List().Select(ToDto)));
+
+app.MapMethods("/api/sessions", new[] { HttpMethods.Post }, async (HttpContext ctx) =>
+{
+    using var doc = await JsonDocument.ParseAsync(ctx.Request.Body);
+    if (!doc.RootElement.TryGetProperty("name", out var nameProp)
+        || string.IsNullOrWhiteSpace(nameProp.GetString()))
+        return Results.BadRequest(new { error = "name is required" });
+    var s = await sessions.InitAsync(nameProp.GetString()!, ctx.RequestAborted);
+    return Results.Json(ToDto(s));
+});
+
+app.MapMethods("/api/sessions/{name}/recycle", new[] { HttpMethods.Post }, async (HttpContext ctx, string name) =>
+{
+    await sessions.RecycleAsync(name, ctx.RequestAborted);
+    var s = sessions.Get(name);
+    return Results.Json(s is null ? (object)new { name, status = "deleted" } : ToDto(s));
+});
+
+app.MapMethods("/api/sessions/{name}", new[] { HttpMethods.Delete }, async (HttpContext ctx, string name) =>
+{
+    await sessions.DeleteAsync(name, ctx.RequestAborted);
+    return Results.Ok();
+});
 
 app.UseWebSockets();
 app.Map("/ws", async (HttpContext ctx) =>
@@ -39,7 +72,10 @@ app.Map("/ws", async (HttpContext ctx) =>
         return;
     }
     var socket = await ctx.WebSockets.AcceptWebSocketAsync();
-    var bridge = new WsBridge(session, new AspNetWsClient(socket));
+    // A tab attaches to ONE named session's stream; default name when unspecified.
+    var name = ctx.Request.Query["session"].FirstOrDefault()
+               ?? PiWebui.Session.SessionManager.DefaultSessionName;
+    var bridge = new WsBridge(sessions, name, new AspNetWsClient(socket));
     await bridge.RunAsync(ctx.RequestAborted);
 });
 

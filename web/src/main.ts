@@ -13,6 +13,12 @@ interface MessageUpdateEvent extends RpcEvent {
   assistantMessageEvent?: { type: string; delta?: string };
 }
 
+/** Server-side lifecycle frame pushed by the WS bridge (ticket #05). */
+interface SessionInfo {
+  name: string;
+  status: "running" | "recycled" | "deleted";
+}
+
 /** A single assistant message being streamed (text + optional thinking). */
 interface ActiveAssistant {
   text: HTMLElement;
@@ -24,12 +30,19 @@ class Transcript {
   private readonly root: HTMLElement;
   private status: HTMLElement | null = null;
   private active: ActiveAssistant | null = null;
-  /** Rows created by tool_execution_start, keyed by toolCallId so updates and
-   * bash output can land in the same row instead of "the last row". */
+  /** Rows created by tool_execution_start, keyed by toolCallId. */
   private readonly toolRows = new Map<string, HTMLElement>();
 
   constructor(root: HTMLElement) {
     this.root = root;
+  }
+
+  /** Reset for a fresh session attachment (live-stream: no replay). */
+  clear(): void {
+    this.root.textContent = "";
+    this.status = null;
+    this.active = null;
+    this.toolRows.clear();
   }
 
   handle(ev: RpcEvent): void {
@@ -80,8 +93,6 @@ class Transcript {
 
       case "bash_execution_update": {
         const b = ev as { id?: string; delta?: string };
-        // Bash output renders inside the same row as its bash tool call (correlated
-        // by toolCallId/id); fall back to the last tool row / dedicated bash row.
         const row = (b.id ? this.toolRows.get(b.id) : undefined) ?? this.lastToolRow() ?? this.ensureBashRow();
         this.appendCode(row, String(b.delta ?? ""));
         break;
@@ -214,18 +225,167 @@ function setup(): void {
   status.subscribe((v) => (statusEl.textContent = v));
   app.prepend(statusEl);
 
+  const sessionListEl = document.querySelector<HTMLUListElement>("#session-list")!;
+  const activeEl = document.querySelector<HTMLElement>("#active-session")!;
+  const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
+  const recycleBtn = document.querySelector<HTMLButtonElement>("#recycle")!;
+  const deleteBtn = document.querySelector<HTMLButtonElement>("#delete")!;
+
+  const token = readToken();
+
+  // --- controller ----------------------------------------------------------
+  const sessions = new Map<string, string>(); // name -> status
+  let active = "";
+
+  // --- WebSocket ----------------------------------------------------------
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  let ws: WebSocket | null = null;
+
+  function wsUrl(): string {
+    const base = `${proto}//${location.host}/ws?session=${encodeURIComponent(active)}`;
+    return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+  }
+
+  function wsSend(obj: unknown): void {
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  // --- API (REST) ----------------------------------------------------------
+  async function api(path: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(path, init);
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return res;
+  }
+
+  async function createSession(name: string): Promise<void> {
+    await api("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    sessions.set(name, "running");
+  }
+
+  async function refreshSessions(): Promise<void> {
+    const res = await api("/api/sessions");
+    const list = (await res.json()) as SessionInfo[];
+    sessions.clear();
+    for (const s of list) sessions.set(s.name, s.status);
+  }
+
+  // --- rendering -----------------------------------------------------------
+  function statusClass(s: string): string {
+    return s === "running" ? "running" : "recycled";
+  }
+
+  function renderSessions(): void {
+    sessionListEl.textContent = "";
+    const names = [...sessions.keys()].sort();
+    for (const name of names) {
+      const item = el("li", undefined, "session-item");
+      if (name === active) item.classList.add("active");
+      item.append(el("span", undefined, `dot ${statusClass(sessions.get(name) ?? "")}`));
+      const label = el("span", name, "name");
+      label.title = name;
+      const del = el("button", "×", "del");
+      del.title = "Delete session";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wsSend({ type: "delete", name });
+      });
+      item.append(label, del);
+      item.addEventListener("click", () => selectSession(name));
+      sessionListEl.append(item);
+    }
+    activeEl.textContent = active ? `session: ${active}` : "";
+    recycleBtn.disabled = !active;
+    deleteBtn.disabled = !active;
+  }
+
+  function selectSession(name: string): void {
+    if (name === active) return;
+    active = name;
+    if (!sessions.has(name)) sessions.set(name, "running");
+    renderSessions();
+    connect();
+  }
+
+  function fallbackAfterActiveDeleted(): void {
+    active = "";
+    const names = [...sessions.keys()].sort();
+    if (names.length) selectSession(names[0]);
+    else bootstrapDefault();
+  }
+
+  async function bootstrapDefault(): Promise<void> {
+    const name = "default";
+    try {
+      await createSession(name);
+      active = name;
+      renderSessions();
+      connect();
+    } catch {
+      status.set("failed to reach server");
+    }
+  }
+
+  function handleFrame(obj: RpcEvent): void {
+    if (obj.type === "session_event") {
+      const s = obj.session as SessionInfo;
+      if (s.status === "deleted") sessions.delete(s.name);
+      else sessions.set(s.name, s.status);
+
+      if (s.name === active && s.status === "deleted") fallbackAfterActiveDeleted();
+      else renderSessions();
+      return;
+    }
+    if (obj.type === "error") {
+      status.set(`⚠ ${String((obj as { message?: string }).message ?? "error")}`);
+      return;
+    }
+    transcript.handle(obj); // live RPC event
+  }
+
+  function connect(): void {
+    transcript.clear();
+    status.set("connecting…");
+    if (ws) {
+      const old = ws;
+      old.onclose = null; // the new connection owns the close path now
+      old.close();
+    }
+    const url = wsUrl();
+    const socket = new WebSocket(url);
+    ws = socket;
+    socket.onopen = () => status.set("● connected");
+    socket.onmessage = (evt) => {
+      let obj: RpcEvent;
+      try {
+        obj = JSON.parse(String(evt.data)) as RpcEvent;
+      } catch {
+        return; // ignore malformed frames
+      }
+      handleFrame(obj);
+    };
+    socket.onclose = () => {
+      if (ws !== socket) return; // superseded by a newer connection
+      status.set("disconnected — retrying…");
+      setTimeout(() => connect(), 1000);
+    };
+    socket.onerror = () => socket.close();
+  }
+
+  // --- controls ------------------------------------------------------------
   const input = document.querySelector<HTMLTextAreaElement>("#prompt")!;
   const send = document.querySelector<HTMLButtonElement>("#send")!;
-  const draft = new Signal<string>("");
   const sendBox = document.querySelector<HTMLFormElement>("#composer")!;
 
-  input.addEventListener("input", () => draft.set(input.value));
+  input.addEventListener("input", () => { /* keep native behaviour */ });
   const submit = (): void => {
     const text = input.value.trim();
     if (!text) return;
     wsSend({ type: "prompt", message: text });
     input.value = "";
-    draft.set("");
   };
   sendBox.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -239,38 +399,38 @@ function setup(): void {
     }
   });
 
-  // --- WebSocket ----------------------------------------------------------
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  // Ticket #02: the service gate-keeps every request behind the config token. Take
-  // it from the page URL (http://host:port/?token=…) or the cookie the server set
-  // after that first authenticated hit, and send it on the WS handshake.
-  const token = readToken();
-  const wsUrl = `${proto}//${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
-  let ws: WebSocket | null = null;
+  newBtn.addEventListener("click", async () => {
+    const name = prompt("New session name:", `session-${Date.now().toString(36)}`);
+    if (!name || !name.trim()) return;
+    const trimmed = name.trim();
+    try {
+      await createSession(trimmed);
+      renderSessions();
+      selectSession(trimmed);
+    } catch {
+      status.set("failed to create session");
+    }
+  });
 
-  function wsSend(obj: unknown): void {
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-  }
+  recycleBtn.addEventListener("click", () => {
+    if (active) wsSend({ type: "recycle", name: active });
+  });
 
-  function connect(): void {
-    status.set("connecting…");
-    ws = new WebSocket(wsUrl);
-    ws.onopen = () => status.set("● connected");
-    ws.onmessage = (evt) => {
-      try {
-        const event = JSON.parse(String(evt.data)) as RpcEvent;
-        transcript.handle(event);
-      } catch {
-        /* ignore malformed frames */
-      }
-    };
-    ws.onclose = () => {
-      status.set("disconnected — retrying…");
-      setTimeout(connect, 1000);
-    };
-    ws.onerror = () => ws?.close();
-  }
-  connect();
+  deleteBtn.addEventListener("click", () => {
+    if (active) wsSend({ type: "delete", name: active });
+  });
+
+  // --- boot ----------------------------------------------------------------
+  (async () => {
+    try {
+      await refreshSessions();
+    } catch {
+      status.set("failed to load sessions");
+      return;
+    }
+    if (sessions.size === 0) await bootstrapDefault();
+    else selectSession([...sessions.keys()].sort()[0]);
+  })();
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup);

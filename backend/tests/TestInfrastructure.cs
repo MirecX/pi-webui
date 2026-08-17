@@ -9,21 +9,34 @@ internal sealed class FakePiRpcClient : IPiRpcClient
 {
     public event Action<RpcEvent>? EventReceived;
     public List<RpcCommand> Sent { get; } = new();
-    private readonly Func<RpcCommand, RpcResponse?>? _responder;
+    public bool Started { get; private set; }
+    public bool Disposed { get; private set; }
+    private readonly Func<RpcCommand, CancellationToken, Task<RpcResponse?>>? _responder;
 
-    public FakePiRpcClient(Func<RpcCommand, RpcResponse?>? responder = null) => _responder = responder;
+    public FakePiRpcClient(Func<RpcCommand, RpcResponse?>? responder = null)
+        : this(responder is null ? null : (cmd, _) => Task.FromResult(responder(cmd))) { }
 
-    public void Start() { }
+    /// <summary>Async responder for slow/blocked simulations (per-session isolation tests).</summary>
+    public FakePiRpcClient(Func<RpcCommand, CancellationToken, Task<RpcResponse?>>? responder)
+        => _responder = responder;
+
+    public void Start() => Started = true;
 
     public void Emit(RpcEvent ev) => EventReceived?.Invoke(ev);
 
     public Task<RpcResponse?> SendAsync(RpcCommand command, CancellationToken ct = default)
     {
         Sent.Add(command);
-        return Task.FromResult(_responder?.Invoke(command));
+        return _responder is null
+            ? Task.FromResult<RpcResponse?>(null)
+            : _responder(command, ct);
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public async ValueTask DisposeAsync()
+    {
+        Disposed = true;
+        await Task.CompletedTask;
+    }
 }
 
 /// <summary>Fake WebSocket client: records sent frames, queues inbound frames.</summary>

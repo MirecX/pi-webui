@@ -9,19 +9,33 @@
   <body>
     <header>
       <h1>pi-webui</h1>
+      <span id="active-session" class="active-session"></span>
+      <span id="active-actions" class="active-actions">
+        <button id="recycle" type="button" title="Stop this session's agent (keeps history)">Recycle</button>
+        <button id="delete" type="button" title="Delete this session permanently">Delete</button>
+      </span>
       <span id="app" class="ws-status-wrap"></span>
     </header>
-    <main>
-      <div id="transcript" class="transcript" aria-live="polite"></div>
-      <form id="composer" class="composer">
-        <textarea
-          id="prompt"
-          rows="3"
-          placeholder="Send a prompt to the agent… (Enter to send, Shift+Enter for newline)"
-        ></textarea>
-        <button id="send" type="submit">Send</button>
-      </form>
-    </main>
+    <div class="layout">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-head">
+          <span>Sessions</span>
+          <button id="new" type="button" title="Create a new named session">+ New</button>
+        </div>
+        <ul id="session-list" class="session-list"></ul>
+      </aside>
+      <main>
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <textarea
+            id="prompt"
+            rows="3"
+            placeholder="Send a prompt to the agent… (Enter to send, Shift+Enter for newline)"
+          ></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </main>
+    </div>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

@@ -51,6 +51,19 @@ public sealed record GetStateCommand : RpcCommand
     public override string Type => "get_state";
 }
 
+/// <summary>Start a fresh session (used when spawning a brand-new child).</summary>
+public sealed record NewSessionCommand : RpcCommand
+{
+    public override string Type => "new_session";
+}
+
+/// <summary>Load a stored session file, so a fresh child can resume a preserved history.</summary>
+public sealed record SwitchSessionCommand(string SessionPath) : RpcCommand
+{
+    public override string Type => "switch_session";
+    protected override void WriteExtra(Utf8JsonWriter w) => w.WriteString("sessionPath", SessionPath);
+}
+
 // ---------------------------------------------------------------------------
 // Response + events
 // ---------------------------------------------------------------------------
